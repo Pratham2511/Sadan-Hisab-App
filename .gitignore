@@ -1,0 +1,30 @@
+.gradle/
+build/
+app/build/
+local.properties
+*.iml
+.idea/
+captures/
+
+# Private Data & Production DB
+private-data/
+*.db
+*.sqlite
+*.sqlite3
+*.csv
+*.json
+# Private Data & Production DB
+private-data/
+*.db
+*.sqlite
+*.sqlite3
+*.csv
+*.json
+*.psbackup
+*.backup
+*.pdf
+
+# Environment / Tools
+jdk-*
+.qmind/
+Instructions
