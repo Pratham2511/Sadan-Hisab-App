@@ -31,10 +31,11 @@ object DateUtils {
         return date.format(dateFormat)
     }
 
-    /** Format "yyyy-MM" to "Sep 2026" */
+    /** Format "yyyy-MM" or human-readable month string to "Sep 2026" */
     fun formatMonth(monthKey: String): String {
-        val ym = YearMonth.parse(monthKey)
-        return ym.format(monthYearFormat)
+        if (monthKey.isBlank()) return ""
+        val ym = com.pansare.sadan.domain.MonthKey.parseOrNull(monthKey)
+        return ym?.format(monthYearFormat) ?: monthKey
     }
 
     /** Current date as epoch millis */

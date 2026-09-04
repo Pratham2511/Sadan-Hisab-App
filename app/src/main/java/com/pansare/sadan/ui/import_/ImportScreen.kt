@@ -2,6 +2,7 @@
 
 package com.pansare.sadan.ui.import_
 
+import android.net.Uri
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
@@ -23,11 +24,14 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.ScrollableTabRow
+import androidx.compose.material3.Tab
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
@@ -50,10 +54,8 @@ import com.pansare.sadan.ui.components.UnresolvedNotice
 import com.pansare.sadan.util.CurrencyUtils
 
 /**
- * Two-stage CSV import: pick a file, read the dry-run verdict, then decide.
- *
- * Nothing is written until the user presses Import, and every input row is accounted for as
- * imported, needs-review or rejected — there are no silent skips.
+ * Two-stage CSV/XLSX import: pick a file, select worksheet if multiple exist,
+ * read the dry-run verdict, then decide.
  */
 @Composable
 fun ImportScreen(vm: AppViewModel, onBack: () -> Unit, onViewIssues: () -> Unit) {
@@ -61,17 +63,40 @@ fun ImportScreen(vm: AppViewModel, onBack: () -> Unit, onViewIssues: () -> Unit)
     var busy by remember { mutableStateOf(false) }
     var confirming by remember { mutableStateOf(false) }
     var fileName by remember { mutableStateOf<String?>(null) }
+    var currentUri by remember { mutableStateOf<Uri?>(null) }
+    var sheets by remember { mutableStateOf<List<String>>(emptyList()) }
+    var selectedSheet by remember { mutableStateOf<String?>(null) }
+
+    fun runDryRun(uri: Uri, sheetName: String?) {
+        busy = true
+        result = null
+        vm.dryRunImport(uri, sheetName) { outcome ->
+            result = outcome
+            busy = false
+        }
+    }
 
     val picker = rememberLauncherForActivityResult(
         ActivityResultContracts.OpenDocument()
     ) { uri ->
         if (uri == null) return@rememberLauncherForActivityResult
+        currentUri = uri
+        fileName = uri.lastPathSegment?.substringAfterLast('/')
+        sheets = emptyList()
+        selectedSheet = null
         busy = true
         result = null
-        fileName = uri.lastPathSegment?.substringAfterLast('/')
-        vm.dryRunImport(uri) { outcome ->
-            result = outcome
-            busy = false
+
+        val name = uri.lastPathSegment?.lowercase() ?: ""
+        if (name.endsWith(".xlsx") || name.endsWith(".xls")) {
+            vm.listXlsxSheets(uri) { sheetList ->
+                sheets = sheetList
+                val target = sheetList.firstOrNull()
+                selectedSheet = target
+                runDryRun(uri, target)
+            }
+        } else {
+            runDryRun(uri, null)
         }
     }
 
@@ -100,7 +125,7 @@ fun ImportScreen(vm: AppViewModel, onBack: () -> Unit, onViewIssues: () -> Unit)
     Scaffold(
         topBar = {
             TopAppBar(
-                title = { Text("Import payments") },
+                title = { Text("Import Payments") },
                 navigationIcon = {
                     IconButton(onClick = onBack) {
                         Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
@@ -125,7 +150,7 @@ fun ImportScreen(vm: AppViewModel, onBack: () -> Unit, onViewIssues: () -> Unit)
                         )
                         Spacer(Modifier.height(6.dp))
                         Text(
-                            "Supports Excel workbooks with multiple sheets (e.g. 'B Wing') and CSV files. " +
+                            "Supports Excel workbooks with multiple sheets (e.g. 'B Wing', 'A Wing') and CSV files. " +
                                 "Recognised columns: Room/Roman, Tenant Name, Rent, Receipt no. & Date, Unpaid Rent/Months. " +
                                 "The file is validated first and nothing is saved until you confirm.",
                             style = MaterialTheme.typography.bodyMedium
@@ -159,6 +184,34 @@ fun ImportScreen(vm: AppViewModel, onBack: () -> Unit, onViewIssues: () -> Unit)
                 }
             }
 
+            if (sheets.size > 1 && currentUri != null) {
+                item {
+                    Text(
+                        "Worksheet in workbook",
+                        style = MaterialTheme.typography.titleSmall,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                    Spacer(Modifier.height(4.dp))
+                    ScrollableTabRow(
+                        selectedTabIndex = sheets.indexOf(selectedSheet).coerceAtLeast(0),
+                        edgePadding = 0.dp
+                    ) {
+                        sheets.forEach { s ->
+                            Tab(
+                                selected = selectedSheet == s,
+                                onClick = {
+                                    if (selectedSheet != s && !busy) {
+                                        selectedSheet = s
+                                        runDryRun(currentUri!!, s)
+                                    }
+                                },
+                                text = { Text(s) }
+                            )
+                        }
+                    }
+                }
+            }
+
             if (busy) {
                 item {
                     Row(
@@ -174,7 +227,7 @@ fun ImportScreen(vm: AppViewModel, onBack: () -> Unit, onViewIssues: () -> Unit)
                     Card(modifier = Modifier.fillMaxWidth()) {
                         Column(Modifier.padding(16.dp)) {
                             Text(
-                                "Check before importing",
+                                "Check before importing" + (selectedSheet?.let { " ($it)" } ?: ""),
                                 style = MaterialTheme.typography.titleMedium,
                                 fontWeight = FontWeight.SemiBold
                             )
@@ -206,14 +259,21 @@ fun ImportScreen(vm: AppViewModel, onBack: () -> Unit, onViewIssues: () -> Unit)
                                     modifier = Modifier.heightIn(min = 48.dp)
                                 ) { Text("Import ${current.importedCount} rows") }
                                 OutlinedButton(
-                                    onClick = { result = null; fileName = null },
+                                    onClick = { result = null; fileName = null; currentUri = null; sheets = emptyList(); selectedSheet = null },
                                     modifier = Modifier.heightIn(min = 48.dp)
                                 ) { Text("Discard") }
                             }
-                            if (current.importedCount == 0) {
+                            if (total == 0) {
                                 Spacer(Modifier.height(8.dp))
                                 UnresolvedNotice(
-                                    "No row in this file can be imported as it stands. " +
+                                    "Could not recognise a room or tenant column on this sheet" +
+                                        (selectedSheet?.let { " ('$it')" } ?: "") +
+                                        ". Choose another sheet or check that column headers match Room, Tenant, Rent, Receipt."
+                                )
+                            } else if (current.importedCount == 0) {
+                                Spacer(Modifier.height(8.dp))
+                                UnresolvedNotice(
+                                    "No row in this sheet can be imported as it stands. " +
                                         "Fix the reasons listed below and try again."
                                 )
                             }
@@ -248,7 +308,7 @@ fun ImportScreen(vm: AppViewModel, onBack: () -> Unit, onViewIssues: () -> Unit)
                     EmptyState(
                         icon = Icons.Outlined.UploadFile,
                         title = "No file checked yet",
-                        message = "Select a CSV file to see exactly what would be imported."
+                        message = "Select an Excel (.xlsx) or CSV file to see exactly what would be imported."
                     )
                 }
             }

@@ -401,4 +401,38 @@ class AccountingEngineTest {
             assertTrue(it.outstanding >= 0L)
         }
     }
+
+    @Test
+    fun `2000 payment for Sep 2026 and Oct 2026 at 1000 per month marks both PAID with 0 outstanding`() {
+        val sep = month("2026-09", 1000)
+        val oct = month("2026-10", 1000)
+        val months = listOf(sep, oct)
+
+        val plan = LedgerEngine.plan(LedgerEngine.computeStates(months, emptyList()), 2000)
+
+        assertEquals(2, plan.monthsTouched)
+        assertEquals(listOf("2026-09", "2026-10"), plan.lines.map { it.month })
+        assertEquals(listOf(1000L, 1000L), plan.lines.map { it.amount })
+        plan.statesAfter.forEach {
+            assertEquals(LedgerStatusValue.PAID, it.status)
+            assertEquals(0L, it.outstanding)
+        }
+    }
+
+    @Test
+    fun `6-month and 12-month advance payments allocate sequentially without overpayment`() {
+        // 6-month advance
+        val months6 = (1..6).map { month("2026-%02d".format(it), 1000) }
+        val plan6 = LedgerEngine.plan(LedgerEngine.computeStates(months6, emptyList()), 6000)
+        assertEquals(6, plan6.monthsTouched)
+        assertEquals(List(6) { 1000L }, plan6.lines.map { it.amount })
+        plan6.statesAfter.forEach { assertEquals(0L, it.outstanding) }
+
+        // 12-month advance
+        val months12 = (1..12).map { month("2026-%02d".format(it), 1000) }
+        val plan12 = LedgerEngine.plan(LedgerEngine.computeStates(months12, emptyList()), 12000)
+        assertEquals(12, plan12.monthsTouched)
+        assertEquals(List(12) { 1000L }, plan12.lines.map { it.amount })
+        plan12.statesAfter.forEach { assertEquals(0L, it.outstanding) }
+    }
 }

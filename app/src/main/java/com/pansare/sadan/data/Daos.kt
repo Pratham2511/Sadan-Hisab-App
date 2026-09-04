@@ -145,6 +145,9 @@ interface PaymentDao {
     @Query("SELECT fingerprint FROM payments")
     suspend fun allFingerprints(): List<String>
 
+    @Query("SELECT receiptNumber FROM payments WHERE receiptNumber != ''")
+    suspend fun allReceiptNumbers(): List<String>
+
     @Query("SELECT COUNT(*) FROM payments WHERE fingerprint = :fingerprint AND id != :excludeId")
     suspend fun fingerprintExists(fingerprint: String, excludeId: Long = 0): Int
 

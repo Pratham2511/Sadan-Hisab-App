@@ -373,7 +373,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             val lm = repo.database().ledgerDao().findById(a.ledgerMonthId)
             val monthStr = lm?.month ?: ""
             ReceiptLine(
-                month = MonthKey.displayName(monthStr),
+                month = monthStr,
                 rentDue = lm?.rentDue ?: 0L,
                 allocated = a.allocatedAmount
             )

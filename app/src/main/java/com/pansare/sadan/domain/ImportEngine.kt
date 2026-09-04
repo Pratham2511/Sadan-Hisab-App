@@ -117,12 +117,14 @@ object ImportEngine {
     fun validate(
         rows: List<RawPaymentRow>,
         knownRooms: Set<String>,
-        existingFingerprints: Set<String> = emptySet()
+        existingFingerprints: Set<String> = emptySet(),
+        existingReceipts: Set<String> = emptySet()
     ): ImportResult {
         val valid = mutableListOf<ValidatedPaymentRow>()
         val review = mutableListOf<ImportIssue>()
         val rejected = mutableListOf<ImportIssue>()
         val seen = existingFingerprints.toMutableSet()
+        val seenReceipts = existingReceipts.toMutableSet()
         val knownUpper = knownRooms.map { it.uppercase() }.toSet()
 
         for (row in rows) {
@@ -200,6 +202,15 @@ object ImportEngine {
             }
 
             val receipt = row.receiptNumber?.trim().orEmpty()
+            if (receipt.isNotBlank() && receipt in seenReceipts) {
+                review += ImportIssue(
+                    IssueKind.DUPLICATE_PAYMENT,
+                    "Receipt number $receipt has already been used by another payment.",
+                    row.rowNumber, ref
+                )
+                continue
+            }
+
             val mode = row.paymentMode?.trim().orEmpty().ifBlank { "OTHER" }
             val print = fingerprint(room, date, amount, receipt, mode, from, to)
 
@@ -212,6 +223,7 @@ object ImportEngine {
                 continue
             }
             seen += print
+            if (receipt.isNotBlank()) seenReceipts += receipt
 
             valid += ValidatedPaymentRow(
                 rowNumber = row.rowNumber,

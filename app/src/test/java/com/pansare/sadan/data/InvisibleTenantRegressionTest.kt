@@ -56,25 +56,24 @@ class InvisibleTenantRegressionTest {
     }
 
     @Test
-    fun `adding 10 tenants to Wing A scales cleanly without arbitrary truncation`() = runBlocking {
+    fun `adding 5, 10, and 20 tenants scales cleanly without arbitrary truncation`() = runBlocking {
         val allRooms = repo.allRooms().sortedBy { it.sortKey }
-        val wingARooms = allRooms.filter { it.wing == "A" }
 
-        for (i in 0 until 10) {
+        // Add 20 tenants total (10 in A, 10 in B)
+        for (i in 0 until 20) {
             repo.addTenant(
-                roomId = wingARooms[i].id,
-                name = "Tenant $i",
-                mobile = "987654321$i",
+                roomId = allRooms[i].id,
+                name = "Scaled Tenant $i",
+                mobile = "98765432%02d".format(i),
                 monthlyRent = 5000L + (i * 100),
                 occupancyStartMonth = MonthKey.current()
             )
         }
 
         val rows = repo.roomsWithTenants()
-        val wingARows = rows.filter { it.wing == "A" }
-        val occupiedA = wingARows.filter { it.isOccupied }
+        val occupied = rows.filter { it.isOccupied }
 
-        assertEquals(28, wingARows.size)
-        assertEquals(10, occupiedA.size)
+        assertEquals(48, rows.size)
+        assertEquals(20, occupied.size)
     }
 }

@@ -545,10 +545,14 @@ class RentRepository(private val db: AppDatabase) {
     // Import
     // ──────────────────────────────────────────────
 
-    /** Validates rows without writing anything. */
     suspend fun validateImport(rows: List<RawPaymentRow>): ImportResult {
         val roomNames = rooms.getAll().map { it.displayRoomNumber }.toSet()
-        return ImportEngine.validate(rows, roomNames, payments.allFingerprints().toSet())
+        return ImportEngine.validate(
+            rows = rows,
+            knownRooms = roomNames,
+            existingFingerprints = payments.allFingerprints().toSet(),
+            existingReceipts = payments.allReceiptNumbers().toSet()
+        )
     }
 
     /**

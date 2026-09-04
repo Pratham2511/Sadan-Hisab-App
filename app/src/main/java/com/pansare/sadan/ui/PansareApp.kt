@@ -66,17 +66,24 @@ fun SadanApp(vm: AppViewModel) {
     Scaffold(
         topBar = {
             if (isTopLevel) {
-                TopAppBar(
-                    title = {
-                        Column {
-                            Text("PANSARE SADAN", fontWeight = FontWeight.Bold)
-                            Text(
-                                "Sakinaka, Mohili Village",
-                                style = MaterialTheme.typography.labelSmall
-                            )
+                val currentTopLevel = TopLevel.entries.firstOrNull { it.route == route }
+                if (currentTopLevel == TopLevel.DASHBOARD) {
+                    TopAppBar(
+                        title = {
+                            Column {
+                                Text("PANSARE SADAN", fontWeight = FontWeight.Bold)
+                                Text(
+                                    "Sakinaka, Mohili Village",
+                                    style = MaterialTheme.typography.labelSmall
+                                )
+                            }
                         }
-                    }
-                )
+                    )
+                } else if (currentTopLevel != null) {
+                    TopAppBar(
+                        title = { Text(currentTopLevel.label) }
+                    )
+                }
             }
         },
         bottomBar = {
