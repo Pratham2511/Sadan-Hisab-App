@@ -50,9 +50,9 @@ fun LedgerScreen(
     tenantId: Long,
     onBack: () -> Unit
 ) {
-    val rows by vm.observeLedger(tenantId).collectAsStateWithLifecycle(emptyList())
-    val allocations by vm.observeAllocationDetails(tenantId).collectAsStateWithLifecycle(emptyList())
-    val tenant by vm.observeTenant(tenantId).collectAsStateWithLifecycle(null)
+    val rows by vm.repo.observeLedger(tenantId).collectAsStateWithLifecycle(emptyList())
+    val allocations by vm.repo.observeAllocationDetails(tenantId).collectAsStateWithLifecycle(emptyList())
+    val tenant by vm.repo.observeTenant(tenantId).collectAsStateWithLifecycle(null)
 
     val byMonth = allocations.groupBy { it.ledgerMonthId }
 

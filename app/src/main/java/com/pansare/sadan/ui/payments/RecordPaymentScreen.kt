@@ -85,7 +85,7 @@ fun RecordPaymentScreen(
     // Load context: either a new payment for a tenant, or an existing payment being edited.
     LaunchedEffect(tenantId, editPaymentId) {
         if (isEdit) {
-            vm.findPayment(editPaymentId)?.let { p ->
+            vm.repo.findPayment(editPaymentId)?.let { p ->
                 actualTenantId = p.tenantId
                 amount = p.amountPaid.toString()
                 receipt = p.receiptNumber
@@ -98,7 +98,7 @@ fun RecordPaymentScreen(
         } else if (receipt.isBlank()) {
             receipt = vm.nextReceiptNumber()
         }
-        vm.findTenant(actualTenantId)?.let { t ->
+        vm.repo.findTenant(actualTenantId)?.let { t ->
             tenantName = t.tenantName
             if (!isEdit && from < t.occupancyStartMonth) {
                 from = t.occupancyStartMonth

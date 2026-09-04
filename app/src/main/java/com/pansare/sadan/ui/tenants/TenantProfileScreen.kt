@@ -55,15 +55,15 @@ fun TenantProfileScreen(
     onRecordPayment: () -> Unit,
     onViewLedger: () -> Unit
 ) {
-    val tenant by vm.observeTenant(tenantId).collectAsStateWithLifecycle(null)
-    val payments by vm.observePaymentsForTenant(tenantId).collectAsStateWithLifecycle(emptyList())
+    val tenant by vm.repo.observeTenant(tenantId).collectAsStateWithLifecycle(null)
+    val payments by vm.repo.observePaymentsForTenant(tenantId).collectAsStateWithLifecycle(emptyList())
     var summary by remember { mutableStateOf<DefaulterSummary?>(null) }
     var roomNumber by remember { mutableStateOf("") }
 
     // Recompute whenever the payment list changes, so the profile never shows stale figures.
     LaunchedEffect(tenantId, payments) {
-        summary = vm.summaryFor(tenantId)
-        vm.findTenant(tenantId)?.let { t ->
+        summary = vm.repo.summaryFor(tenantId)
+        vm.repo.findTenant(tenantId)?.let { t ->
             vm.repo.findRoom(t.roomId)?.let { roomNumber = it.displayRoomNumber }
         }
     }

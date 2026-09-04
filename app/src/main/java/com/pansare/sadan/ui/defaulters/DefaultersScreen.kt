@@ -56,7 +56,7 @@ fun DefaultersScreen(
 
     LaunchedEffect(defaulters) {
         summaries = defaulters.mapNotNull { d ->
-            d.tenantId?.let { it to vm.summaryFor(it) }
+            d.tenantId?.let { it to vm.repo.summaryFor(it) }
         }.toMap()
     }
 

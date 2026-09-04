@@ -70,10 +70,10 @@ fun EditTenantScreen(
     var showMoveOut by remember { mutableStateOf(false) }
     var moveOutMonth by remember { mutableStateOf(MonthKey.current()) }
 
-    val rentChanges by vm.observeRentChanges(tenantId).collectAsStateWithLifecycle(emptyList())
+    val rentChanges by vm.repo.observeRentChanges(tenantId).collectAsStateWithLifecycle(emptyList())
 
     LaunchedEffect(tenantId) {
-        vm.findTenant(tenantId)?.let {
+        vm.repo.findTenant(tenantId)?.let {
             loaded = it
             name = it.tenantName
             mobile = it.mobileNumber
@@ -288,7 +288,7 @@ fun EditTenantScreen(
                 "The ledger and all payments are kept, and unpaid future months are removed.",
             confirmLabel = "End tenancy",
             destructive = true,
-            onConfirm = { vm.moveOut(tenantId, moveOutMonth) { ok -> if (ok) onDone() } },
+            onConfirm = { vm.moveOutTenant(tenantId, moveOutMonth) { ok -> if (ok) onDone() } },
             onDismiss = { showMoveOut = false }
         )
     }

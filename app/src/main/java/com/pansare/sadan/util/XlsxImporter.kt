@@ -167,8 +167,7 @@ object XlsxImporter {
                 receiptNumber = receiptDetails.receiptNumber,
                 paymentMode = receiptDetails.paymentMode,
                 paidFromMonth = fromMonth,
-                paidToMonth = toMonth,
-                rawNote = listOf(rawReceipt, rawUnpaidPeriod).filter { it.isNotBlank() }.joinToString(" | ")
+                paidToMonth = toMonth
             )
         }
 

@@ -12,6 +12,7 @@ import com.pansare.sadan.data.PaymentMode
 import com.pansare.sadan.data.PaymentWithTenantRow
 import com.pansare.sadan.data.RentRepository
 import com.pansare.sadan.data.RoomInventory
+import com.pansare.sadan.data.IssueStatus
 import com.pansare.sadan.data.RoomWithTenantRow
 import com.pansare.sadan.data.TenantEntity
 import com.pansare.sadan.data.backup.BackupManager
@@ -19,7 +20,6 @@ import com.pansare.sadan.domain.AllocationPlan
 import com.pansare.sadan.domain.DefaulterSummary
 import com.pansare.sadan.domain.ImportResult
 import com.pansare.sadan.domain.MonthKey
-import com.pansare.sadan.reports.ReportBuilder
 import com.pansare.sadan.util.CsvImport
 import com.pansare.sadan.util.ReceiptData
 import com.pansare.sadan.util.ReceiptLine
@@ -171,7 +171,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             partialMonths = roomList.sumOf { it.partialMonths },
             totalOutstanding = roomList.sumOf { it.outstanding },
             unresolvedOutstanding = roomList.filter { it.hasUnresolvedHistory }.sumOf { it.outstanding },
-            openIssues = issueList.count { it.status == "OPEN" },
+            openIssues = issueList.count { it.status == IssueStatus.OPEN },
             isLoading = false
         )
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), DashboardState())
@@ -370,19 +370,25 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             ?: RentRepository.DEFAULT_PROPERTY_ADDRESS
 
         val lines = allocs.map { a ->
-            val month = repo.database().ledgerDao().find(a.ledgerMonthId)?.month ?: ""
-            ReceiptLine(MonthKey.displayName(month), a.allocatedAmount)
+            val lm = repo.database().ledgerDao().findById(a.ledgerMonthId)
+            val monthStr = lm?.month ?: ""
+            ReceiptLine(
+                month = MonthKey.displayName(monthStr),
+                rentDue = lm?.rentDue ?: 0L,
+                allocated = a.allocatedAmount
+            )
         }
 
-        val file = ReceiptPdf.generate(
-            getApplication(),
+        val destFile = java.io.File(getApplication<Application>().cacheDir, "receipt_${payment.receiptNumber.replace('/', '_')}.pdf")
+        val file = ReceiptPdf.create(
+            destFile,
             ReceiptData(
                 propertyName = propName,
                 propertyAddress = propAddr,
                 receiptNumber = payment.receiptNumber,
                 paymentDate = payment.paymentDate,
+                roomNumber = room.displayRoomNumber,
                 tenantName = tenant.tenantName,
-                roomDisplayNumber = room.displayRoomNumber,
                 paidFromMonth = payment.paidFromMonth,
                 paidToMonth = payment.paidToMonth,
                 monthsCovered = lines.size,
