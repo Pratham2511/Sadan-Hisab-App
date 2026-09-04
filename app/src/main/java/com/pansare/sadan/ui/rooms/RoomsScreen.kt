@@ -59,6 +59,8 @@ fun RoomsScreen(
     val filter by vm.filter.collectAsStateWithLifecycle()
     var wing by remember { mutableStateOf("A") }
 
+    val aCount = rooms.count { it.wing == "A" }
+    val bCount = rooms.count { it.wing == "B" }
     val wingRooms = rooms.filter { it.wing == wing }
 
     Scaffold(
@@ -79,12 +81,12 @@ fun RoomsScreen(
                 Tab(
                     selected = wing == "A",
                     onClick = { wing = "A" },
-                    text = { Text("A Wing") }
+                    text = { Text("A Wing ($aCount)") }
                 )
                 Tab(
                     selected = wing == "B",
                     onClick = { wing = "B" },
-                    text = { Text("B Wing") }
+                    text = { Text("B Wing ($bCount)") }
                 )
             }
 

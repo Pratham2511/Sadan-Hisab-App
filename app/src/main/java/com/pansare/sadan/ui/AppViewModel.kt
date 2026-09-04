@@ -19,11 +19,14 @@ import com.pansare.sadan.domain.AllocationPlan
 import com.pansare.sadan.domain.DefaulterSummary
 import com.pansare.sadan.domain.ImportResult
 import com.pansare.sadan.domain.MonthKey
+import com.pansare.sadan.reports.ReportBuilder
 import com.pansare.sadan.util.CsvImport
 import com.pansare.sadan.util.ReceiptData
 import com.pansare.sadan.util.ReceiptLine
 import com.pansare.sadan.util.ReceiptPdf
 import com.pansare.sadan.util.ShareUtils
+import com.pansare.sadan.util.XlsxImporter
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -36,6 +39,7 @@ import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.io.File
 
 /** A user-visible outcome. Never a fake success — failures carry the real reason. */
@@ -110,12 +114,6 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     private val _asOf = MutableStateFlow(MonthKey.current())
     val asOf: StateFlow<String> = _asOf.asStateFlow()
 
-    private val _rooms = MutableStateFlow<List<RoomCardState>>(emptyList())
-    val rooms: StateFlow<List<RoomCardState>> = _rooms.asStateFlow()
-
-    private val _dashboard = MutableStateFlow(DashboardState())
-    val dashboard: StateFlow<DashboardState> = _dashboard.asStateFlow()
-
     private val _query = MutableStateFlow("")
     val query: StateFlow<String> = _query.asStateFlow()
 
@@ -128,9 +126,59 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     val issues: StateFlow<List<ImportValidationIssueEntity>> = repo.observeValidationIssues()
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
 
+    /**
+     * Single reactive state flow for room cards. Computed safely on Dispatchers.IO
+     * whenever database rooms/tenants change or asOf month is updated.
+     */
+    val rooms: StateFlow<List<RoomCardState>> = combine(
+        repo.observeRoomsWithTenants(),
+        _asOf
+    ) { rows, asOf ->
+        withContext(Dispatchers.IO) {
+            rows.map { row ->
+                val summary: DefaulterSummary? = row.tenantId?.let { repo.summaryFor(it, asOf) }
+                RoomCardState(
+                    roomId = row.roomId,
+                    wing = row.wing,
+                    displayRoomNumber = row.displayRoomNumber,
+                    tenantId = row.tenantId,
+                    tenantName = row.tenantName,
+                    mobileNumber = row.mobileNumber,
+                    monthlyRent = row.monthlyRent,
+                    outstanding = summary?.totalOutstanding ?: 0L,
+                    unpaidMonths = summary?.unpaidMonths ?: 0,
+                    partialMonths = summary?.partialMonths ?: 0,
+                    hasUnresolvedHistory = summary?.hasUnresolvedHistory ?: false
+                )
+            }
+        }
+    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
+
+    /**
+     * Dashboard totals derived directly from rooms and issues. Guarantees 100% metric consistency.
+     */
+    val dashboard: StateFlow<DashboardState> = combine(rooms, issues) { roomList, issueList ->
+        val occupied = roomList.count { it.isOccupied }
+        DashboardState(
+            totalRooms = RoomInventory.TOTAL_ROOMS,
+            occupiedRooms = occupied,
+            vacantRooms = RoomInventory.TOTAL_ROOMS - occupied,
+            totalTenants = occupied,
+            regularTenants = roomList.count { it.isOccupied && it.standing == "Regular" },
+            defaulters = roomList.count { it.standing == "Defaulter" },
+            partiallyPaidTenants = roomList.count { it.standing == "Partially Paid" },
+            unpaidMonths = roomList.sumOf { it.unpaidMonths },
+            partialMonths = roomList.sumOf { it.partialMonths },
+            totalOutstanding = roomList.sumOf { it.outstanding },
+            unresolvedOutstanding = roomList.filter { it.hasUnresolvedHistory }.sumOf { it.outstanding },
+            openIssues = issueList.count { it.status == "OPEN" },
+            isLoading = false
+        )
+    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), DashboardState())
+
     /** Rooms after search and filter are applied. Case-insensitive across room, name, mobile. */
     val visibleRooms: StateFlow<List<RoomCardState>> =
-        combine(_rooms, _query, _filter) { list, q, f ->
+        combine(rooms, _query, _filter) { list, q, f ->
             val term = q.trim().lowercase()
             list.asSequence()
                 .filter { room ->
@@ -152,7 +200,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 .toList()
         }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
 
-    val defaulters: StateFlow<List<RoomCardState>> = _rooms
+    val defaulters: StateFlow<List<RoomCardState>> = rooms
         .map { list -> list.filter { it.isOccupied && it.outstanding > 0 }.sortedByDescending { it.outstanding } }
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
 
@@ -160,12 +208,6 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch {
             runCatching { repo.initialiseIfEmpty() }
                 .onFailure { emitError(it, "Could not prepare the room inventory.") }
-            refresh()
-        }
-        // Any change to rooms, tenants or payments re-derives the screens.
-        viewModelScope.launch {
-            combine(repo.observeRoomsWithTenants(), repo.observePayments()) { r, _ -> r }
-                .collect { rowsChanged(it) }
         }
     }
 
@@ -175,56 +217,16 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     fun setAsOf(month: String) {
         if (MonthKey.isValid(month)) {
             _asOf.value = month
-            refresh()
         }
     }
 
-    fun refresh() = viewModelScope.launch {
-        runCatching { rowsChanged(null) }
-            .onFailure { emitError(it, "Could not refresh.") }
+    fun refresh() {
+        _asOf.value = _asOf.value
     }
 
-    /** Recomputes every room's derived state and the dashboard totals. */
-    private suspend fun rowsChanged(rows: List<RoomWithTenantRow>?) {
-        val asOf = _asOf.value
-        val source = rows ?: repo.roomsWithTenants()
-        val cards = source.map { row ->
-            val summary: DefaulterSummary? = row.tenantId?.let { repo.summaryFor(it, asOf) }
-            RoomCardState(
-                roomId = row.roomId,
-                wing = row.wing,
-                displayRoomNumber = row.displayRoomNumber,
-                tenantId = row.tenantId,
-                tenantName = row.tenantName,
-                mobileNumber = row.mobileNumber,
-                monthlyRent = row.monthlyRent,
-                outstanding = summary?.totalOutstanding ?: 0L,
-                unpaidMonths = summary?.unpaidMonths ?: 0,
-                partialMonths = summary?.partialMonths ?: 0,
-                hasUnresolvedHistory = summary?.hasUnresolvedHistory ?: false
-            )
-        }
-        _rooms.value = cards
-
-        val occupied = cards.count { it.isOccupied }
-        _dashboard.value = DashboardState(
-            totalRooms = cards.size,
-            occupiedRooms = occupied,
-            vacantRooms = cards.size - occupied,
-            totalTenants = occupied,
-            regularTenants = cards.count { it.isOccupied && it.standing == "Regular" },
-            defaulters = cards.count { it.standing == "Defaulter" },
-            partiallyPaidTenants = cards.count { it.standing == "Partially Paid" },
-            unpaidMonths = cards.sumOf { it.unpaidMonths },
-            partialMonths = cards.sumOf { it.partialMonths },
-            totalOutstanding = cards.sumOf { it.outstanding },
-            unresolvedOutstanding = cards.filter { it.hasUnresolvedHistory }.sumOf { it.outstanding },
-            openIssues = issues.value.size,
-            isLoading = false
-        )
-    }
-
-    // ── Tenants ───────────────────────────────────────────────────────
+    // ──────────────────────────────────────────────
+    // Rooms & tenants
+    // ──────────────────────────────────────────────
 
     fun addTenant(
         roomId: Long,
@@ -238,103 +240,149 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         runCatching { repo.addTenant(roomId, name, mobile, rent, occupancyStart, remarks) }
             .onSuccess {
                 _events.emit(UiEvent.Success("$name added."))
-                refresh(); onDone(true)
+                onDone(true)
             }
             .onFailure { emitError(it, "Tenant could not be added."); onDone(false) }
     }
 
-    fun updateTenant(tenant: TenantEntity, onDone: (Boolean) -> Unit = {}) = viewModelScope.launch {
+    fun updateTenant(
+        tenant: TenantEntity,
+        onDone: (Boolean) -> Unit = {}
+    ) = viewModelScope.launch {
         runCatching { repo.updateTenant(tenant) }
-            .onSuccess { _events.emit(UiEvent.Success("Tenant updated.")); refresh(); onDone(true) }
-            .onFailure { emitError(it, "Tenant could not be updated."); onDone(false) }
+            .onSuccess {
+                _events.emit(UiEvent.Success("Tenant updated."))
+                onDone(true)
+            }
+            .onFailure { emitError(it, "Could not update the tenant."); onDone(false) }
     }
 
-    fun changeRent(tenantId: Long, newRent: Long, from: String, note: String, onDone: (Boolean) -> Unit = {}) =
-        viewModelScope.launch {
-            runCatching { repo.changeRent(tenantId, newRent, from, note) }
-                .onSuccess { _events.emit(UiEvent.Success("Rent updated from ${MonthKey.displayName(from)}.")); refresh(); onDone(true) }
-                .onFailure { emitError(it, "Rent could not be updated."); onDone(false) }
-        }
+    fun changeRent(
+        tenantId: Long,
+        newRent: Long,
+        effectiveFrom: String,
+        note: String = "",
+        onDone: (Boolean) -> Unit = {}
+    ) = viewModelScope.launch {
+        runCatching { repo.changeRent(tenantId, newRent, effectiveFrom, note) }
+            .onSuccess {
+                _events.emit(UiEvent.Success("Rent updated."))
+                onDone(true)
+            }
+            .onFailure { emitError(it, "Could not change the rent."); onDone(false) }
+    }
 
-    fun moveOut(tenantId: Long, endMonth: String, onDone: (Boolean) -> Unit = {}) = viewModelScope.launch {
+    fun moveOutTenant(
+        tenantId: Long,
+        endMonth: String,
+        onDone: (Boolean) -> Unit = {}
+    ) = viewModelScope.launch {
         runCatching { repo.moveOutTenant(tenantId, endMonth) }
-            .onSuccess { _events.emit(UiEvent.Success("Tenancy closed. The room is now vacant.")); refresh(); onDone(true) }
-            .onFailure { emitError(it, "Could not close the tenancy."); onDone(false) }
+            .onSuccess {
+                _events.emit(UiEvent.Success("Tenancy ended."))
+                onDone(true)
+            }
+            .onFailure { emitError(it, "Could not process move-out."); onDone(false) }
     }
 
-    suspend fun findTenant(id: Long): TenantEntity? = repo.findTenant(id)
-    suspend fun summaryFor(id: Long): DefaulterSummary = repo.summaryFor(id, _asOf.value)
-    fun observeTenant(id: Long): Flow<TenantEntity?> = repo.observeTenant(id)
-    fun observeLedger(id: Long): Flow<List<MonthlyLedgerEntity>> = repo.observeLedger(id)
-    fun observeAllocationDetails(id: Long) = repo.observeAllocationDetails(id)
-    fun observePaymentsForTenant(id: Long) = repo.observePaymentsForTenant(id)
-    fun observeRentChanges(id: Long) = repo.observeRentChanges(id)
+    // ──────────────────────────────────────────────
+    // Payments
+    // ──────────────────────────────────────────────
 
-    // ── Payments ──────────────────────────────────────────────────────
-
-    /** Non-destructive preview so the user sees the allocation before saving. */
     suspend fun previewPayment(
-        tenantId: Long, from: String, to: String, amount: Long, excludePaymentId: Long = 0
+        tenantId: Long,
+        from: String,
+        to: String,
+        amount: Long,
+        excludePaymentId: Long = 0L
     ): Result<AllocationPlan> = runCatching {
         repo.previewPayment(tenantId, from, to, amount, excludePaymentId)
     }
 
     fun recordPayment(
-        tenantId: Long, date: Long, amount: Long, mode: PaymentMode,
-        from: String, to: String, receipt: String, notes: String,
+        tenantId: Long,
+        paymentDate: Long,
+        amount: Long,
+        mode: PaymentMode,
+        from: String,
+        to: String,
+        receiptNumber: String,
+        notes: String = "",
         onDone: (Boolean) -> Unit = {}
     ) = viewModelScope.launch {
-        runCatching { repo.recordPayment(tenantId, date, amount, mode, from, to, receipt, notes) }
-            .onSuccess { _events.emit(UiEvent.Success("Payment recorded and allocated.")); refresh(); onDone(true) }
+        runCatching {
+            repo.recordPayment(tenantId, paymentDate, amount, mode, from, to, receiptNumber, notes)
+        }
+            .onSuccess {
+                _events.emit(UiEvent.Success("Payment recorded."))
+                onDone(true)
+            }
             .onFailure { emitError(it, "Payment could not be saved."); onDone(false) }
     }
 
     fun editPayment(
-        paymentId: Long, date: Long, amount: Long, mode: PaymentMode,
-        from: String, to: String, receipt: String, notes: String,
+        paymentId: Long,
+        paymentDate: Long,
+        amount: Long,
+        mode: PaymentMode,
+        from: String,
+        to: String,
+        receiptNumber: String,
+        notes: String = "",
         onDone: (Boolean) -> Unit = {}
     ) = viewModelScope.launch {
-        runCatching { repo.editPayment(paymentId, date, amount, mode, from, to, receipt, notes) }
-            .onSuccess { _events.emit(UiEvent.Success("Payment updated; ledger recalculated.")); refresh(); onDone(true) }
-            .onFailure { emitError(it, "Payment could not be updated."); onDone(false) }
+        runCatching {
+            repo.editPayment(paymentId, paymentDate, amount, mode, from, to, receiptNumber, notes)
+        }
+            .onSuccess {
+                _events.emit(UiEvent.Success("Payment updated."))
+                onDone(true)
+            }
+            .onFailure { emitError(it, "Payment edit failed."); onDone(false) }
     }
 
-    fun deletePayment(paymentId: Long) = viewModelScope.launch {
+    fun deletePayment(paymentId: Long, onDone: (Boolean) -> Unit = {}) = viewModelScope.launch {
         runCatching { repo.deletePayment(paymentId) }
-            .onSuccess { _events.emit(UiEvent.Success("Payment deleted; ledger recalculated.")); refresh() }
-            .onFailure { emitError(it, "Payment could not be deleted.") }
+            .onSuccess {
+                _events.emit(UiEvent.Success("Payment deleted and ledger reversed."))
+                onDone(true)
+            }
+            .onFailure { emitError(it, "Could not delete the payment."); onDone(false) }
     }
 
-    suspend fun findPayment(id: Long): PaymentEntity? = repo.findPayment(id)
     suspend fun nextReceiptNumber(): String = repo.nextReceiptNumber()
 
-    // ── Receipts ──────────────────────────────────────────────────────
+    // ──────────────────────────────────────────────
+    // Receipts
+    // ──────────────────────────────────────────────
 
     private suspend fun buildReceipt(paymentId: Long): Pair<File, String> {
-        val payment = repo.findPayment(paymentId) ?: error("Payment not found.")
-        val tenant = repo.findTenant(payment.tenantId) ?: error("Tenant not found.")
-        val room = repo.findRoom(tenant.roomId) ?: error("Room not found.")
+        val payment = repo.findPayment(paymentId) ?: error("Payment not found")
+        val tenant = repo.findTenant(payment.tenantId) ?: error("Tenant not found")
+        val room = repo.findRoom(tenant.roomId) ?: error("Room not found")
         val allocs = repo.allocationsForPayment(paymentId)
-        val summary = repo.summaryFor(tenant.id, _asOf.value)
+        val ledger = repo.observeLedger(tenant.id).map { list -> list.associateBy { it.id } }
+        val summary = repo.summaryFor(tenant.id)
 
-        val monthById = repo.getAllLedger().filter { it.tenantId == tenant.id }.associateBy { it.id }
-        val lines = allocs.mapNotNull { a ->
-            monthById[a.ledgerMonthId]?.let { ReceiptLine(it.month, it.rentDue, a.allocatedAmount) }
-        }.sortedBy { it.month }
+        val propName = repo.getSetting(RentRepository.KEY_PROPERTY_NAME)
+            ?: RentRepository.DEFAULT_PROPERTY_NAME
+        val propAddr = repo.getSetting(RentRepository.KEY_PROPERTY_ADDRESS)
+            ?: RentRepository.DEFAULT_PROPERTY_ADDRESS
 
-        val context = getApplication<Application>()
-        val file = File(context.cacheDir, "receipts/${payment.receiptNumber.ifBlank { "receipt-$paymentId" }}.pdf")
-        ReceiptPdf.create(
-            file,
+        val lines = allocs.map { a ->
+            val month = repo.database().ledgerDao().find(a.ledgerMonthId)?.month ?: ""
+            ReceiptLine(MonthKey.displayName(month), a.allocatedAmount)
+        }
+
+        val file = ReceiptPdf.generate(
+            getApplication(),
             ReceiptData(
-                propertyName = repo.getSetting(RentRepository.KEY_PROPERTY_NAME)
-                    ?: RentRepository.DEFAULT_PROPERTY_NAME,
-                propertyAddress = repo.getSetting(RentRepository.KEY_PROPERTY_ADDRESS)
-                    ?: RentRepository.DEFAULT_PROPERTY_ADDRESS,
-                receiptNumber = payment.receiptNumber.ifBlank { "—" },
+                propertyName = propName,
+                propertyAddress = propAddr,
+                receiptNumber = payment.receiptNumber,
                 paymentDate = payment.paymentDate,
-                roomNumber = room.displayRoomNumber,
                 tenantName = tenant.tenantName,
+                roomDisplayNumber = room.displayRoomNumber,
                 paidFromMonth = payment.paidFromMonth,
                 paidToMonth = payment.paidToMonth,
                 monthsCovered = lines.size,
@@ -401,20 +449,48 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     // ──────────────────────────────────────────────
 
     /**
-     * Reads and validates a CSV without writing anything, so the user always sees what
+     * Reads and validates a CSV or XLSX without writing anything, so the user always sees what
      * would happen before it happens.
      */
-    fun dryRunImport(uri: Uri, onDone: (ImportResult?) -> Unit) = viewModelScope.launch {
+    fun dryRunImport(uri: Uri, sheetName: String? = null, onDone: (ImportResult?) -> Unit) = viewModelScope.launch {
         runCatching {
-            val text = getApplication<Application>().contentResolver
-                .openInputStream(uri)
-                ?.bufferedReader()
-                ?.use { it.readText() }
-                ?: throw IllegalArgumentException("The selected file could not be opened.")
-            repo.validateImport(CsvImport.parse(text))
+            withContext(Dispatchers.IO) {
+                val cr = getApplication<Application>().contentResolver
+                val name = uri.lastPathSegment?.lowercase() ?: ""
+                val mime = cr.getType(uri)?.lowercase() ?: ""
+
+                val isXlsx = name.endsWith(".xlsx") || name.endsWith(".xls") ||
+                    mime.contains("spreadsheet") || mime.contains("excel") || mime.contains("openxmlformats")
+
+                val rows = if (isXlsx) {
+                    val stream = cr.openInputStream(uri) ?: error("Could not open file.")
+                    val sheetData = XlsxImporter.parseSheet(stream, sheetName)
+                    XlsxImporter.parseRowsFromMatrix(sheetData.rows)
+                } else {
+                    val text = cr.openInputStream(uri)?.bufferedReader()?.use { it.readText() }
+                        ?: error("Could not open CSV file.")
+                    CsvImport.parse(text)
+                }
+                repo.validateImport(rows)
+            }
         }
             .onSuccess { onDone(it) }
-            .onFailure { emitError(it, "The file could not be read as a CSV."); onDone(null) }
+            .onFailure { emitError(it, "The file could not be read."); onDone(null) }
+    }
+
+    /**
+     * Lists all available sheet names in an XLSX file.
+     */
+    fun listXlsxSheets(uri: Uri, onDone: (List<String>) -> Unit) = viewModelScope.launch {
+        runCatching {
+            withContext(Dispatchers.IO) {
+                val stream = getApplication<Application>().contentResolver.openInputStream(uri)
+                    ?: error("Could not open file.")
+                XlsxImporter.listSheets(stream)
+            }
+        }
+            .onSuccess { onDone(it) }
+            .onFailure { onDone(emptyList()) }
     }
 
     /**

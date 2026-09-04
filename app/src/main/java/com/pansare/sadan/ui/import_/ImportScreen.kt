@@ -119,21 +119,30 @@ fun ImportScreen(vm: AppViewModel, onBack: () -> Unit, onViewIssues: () -> Unit)
                 Card(modifier = Modifier.fillMaxWidth()) {
                     Column(Modifier.padding(16.dp)) {
                         Text(
-                            "Choose a CSV file",
+                            "Choose an Excel (.xlsx) or CSV file",
                             style = MaterialTheme.typography.titleMedium,
                             fontWeight = FontWeight.SemiBold
                         )
                         Spacer(Modifier.height(6.dp))
                         Text(
-                            "The first line must be a header. Recognised columns: Room, Name, " +
-                                "Date, Amount, Receipt, Mode, From, To. The file is checked " +
-                                "first and nothing is saved until you confirm.",
+                            "Supports Excel workbooks with multiple sheets (e.g. 'B Wing') and CSV files. " +
+                                "Recognised columns: Room/Roman, Tenant Name, Rent, Receipt no. & Date, Unpaid Rent/Months. " +
+                                "The file is validated first and nothing is saved until you confirm.",
                             style = MaterialTheme.typography.bodyMedium
                         )
                         Spacer(Modifier.height(12.dp))
                         Button(
                             onClick = {
-                                picker.launch(arrayOf("text/csv", "text/comma-separated-values", "text/plain", "*/*"))
+                                picker.launch(
+                                    arrayOf(
+                                        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                                        "application/vnd.ms-excel",
+                                        "text/csv",
+                                        "text/comma-separated-values",
+                                        "text/plain",
+                                        "*/*"
+                                    )
+                                )
                             },
                             enabled = !busy,
                             modifier = Modifier.heightIn(min = 48.dp)

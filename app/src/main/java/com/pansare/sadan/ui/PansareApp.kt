@@ -86,6 +86,7 @@ fun SadanApp(vm: AppViewModel) {
                         val selected = route == item.route
                         NavigationBarItem(
                             selected = selected,
+                            alwaysShowLabel = true,
                             onClick = {
                                 navController.navigate(item.route) {
                                     popUpTo(TopLevel.DASHBOARD.route) { saveState = true }
@@ -99,7 +100,13 @@ fun SadanApp(vm: AppViewModel) {
                                     contentDescription = item.label
                                 )
                             },
-                            label = { Text(item.label) }
+                            label = {
+                                Text(
+                                    text = item.label,
+                                    maxLines = 1,
+                                    softWrap = false
+                                )
+                            }
                         )
                     }
                 }
