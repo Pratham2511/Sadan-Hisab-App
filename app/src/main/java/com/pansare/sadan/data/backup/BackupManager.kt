@@ -2,39 +2,50 @@ package com.pansare.sadan.data.backup
 
 import android.content.Context
 import android.net.Uri
+import androidx.room.withTransaction
 import com.google.gson.Gson
 import com.google.gson.GsonBuilder
-import com.pansare.sadan.data.*
+import com.pansare.sadan.data.ImportValidationIssueEntity
+import com.pansare.sadan.data.MonthlyLedgerEntity
+import com.pansare.sadan.data.PaymentAllocationEntity
+import com.pansare.sadan.data.PaymentEntity
+import com.pansare.sadan.data.RentChangeEntity
+import com.pansare.sadan.data.RentRepository
+import com.pansare.sadan.data.RoomEntity
+import com.pansare.sadan.data.SettingEntity
+import com.pansare.sadan.data.TenantEntity
 import com.pansare.sadan.util.BackupCrypto
 import java.io.ByteArrayOutputStream
-import androidx.room.withTransaction
 
 /**
- * Manages backup export and restore using encrypted JSON snapshots.
- * Backup format: AES-GCM encrypted JSON containing all tables.
+ * Encrypted, versioned backup of every table.
+ *
+ * Restore order is: read -> decrypt (authenticates) -> parse -> validate -> stage ->
+ * transactional replace. A failure at any step before the transaction leaves the live
+ * database untouched, and a failure inside it rolls back.
  */
 class BackupManager(private val repo: RentRepository) {
 
     private val gson: Gson = GsonBuilder().setPrettyPrinting().create()
 
     data class BackupPayload(
-        val version: Int = 1,
-        val appVersion: String = "1.0.0",
-        val timestamp: Long = System.currentTimeMillis(),
-        val rooms: List<RoomEntity>,
-        val tenants: List<TenantEntity>,
-        val payments: List<PaymentEntity>,
-        val ledger: List<MonthlyLedgerEntity>,
-        val allocations: List<PaymentAllocationEntity>,
-        val rentChanges: List<RentChangeEntity>,
-        val settings: List<SettingEntity>,
-        val validationIssues: List<ImportValidationIssueEntity>
+        val version: Int = CURRENT_VERSION,
+        val createdAt: Long = System.currentTimeMillis(),
+        val rooms: List<RoomEntity> = emptyList(),
+        val tenants: List<TenantEntity> = emptyList(),
+        val payments: List<PaymentEntity> = emptyList(),
+        val ledger: List<MonthlyLedgerEntity> = emptyList(),
+        val allocations: List<PaymentAllocationEntity> = emptyList(),
+        val rentChanges: List<RentChangeEntity> = emptyList(),
+        val settings: List<SettingEntity> = emptyList(),
+        val validationIssues: List<ImportValidationIssueEntity> = emptyList()
     )
 
-    /**
-     * Export encrypted backup to the given URI via SAF.
-     */
-    suspend fun exportBackup(context: Context, uri: Uri, password: CharArray) {
+    suspend fun export(context: Context, uri: Uri, password: CharArray) {
+        require(password.size >= MIN_PASSWORD) {
+            "Choose a backup password of at least $MIN_PASSWORD characters."
+        }
+
         val payload = BackupPayload(
             rooms = repo.getAllRooms(),
             tenants = repo.getAllTenants(),
@@ -46,41 +57,66 @@ class BackupManager(private val repo: RentRepository) {
             validationIssues = repo.getAllValidationIssues()
         )
 
-        val json = gson.toJson(payload)
-        val encrypted = BackupCrypto.encrypt(json.toByteArray(Charsets.UTF_8), password)
+        val bytes = gson.toJson(payload).toByteArray(Charsets.UTF_8)
+        val envelope = BackupCrypto.encrypt(bytes, password)
 
-        context.contentResolver.openOutputStream(uri)?.use { stream ->
-            stream.write(encrypted)
-        } ?: throw IllegalStateException("Unable to write backup file.")
+        context.contentResolver.openOutputStream(uri)?.use { it.write(envelope) }
+            ?: throw IllegalStateException("Could not open the selected file for writing.")
+    }
+
+    /** Decrypts and validates without touching the database. */
+    suspend fun validate(context: Context, uri: Uri, password: CharArray): BackupPayload {
+        val envelope = context.contentResolver.openInputStream(uri)?.use { input ->
+            ByteArrayOutputStream().also { input.copyTo(it) }.toByteArray()
+        } ?: throw IllegalStateException("Could not open the selected backup file.")
+
+        val json = BackupCrypto.decrypt(envelope, password).decodeToString()
+
+        val payload = runCatching { gson.fromJson(json, BackupPayload::class.java) }
+            .getOrNull() ?: throw IllegalArgumentException("The backup file is not readable.")
+
+        if (payload.version > CURRENT_VERSION) {
+            throw IllegalArgumentException(
+                "This backup was made by a newer version of Sadan (format ${payload.version}). Update the app first."
+            )
+        }
+        if (payload.rooms.isEmpty()) {
+            throw IllegalArgumentException("The backup contains no room inventory and cannot be restored.")
+        }
+
+        // Referential sanity before anything is written.
+        val roomIds = payload.rooms.map { it.id }.toSet()
+        val tenantIds = payload.tenants.map { it.id }.toSet()
+        val ledgerIds = payload.ledger.map { it.id }.toSet()
+        val paymentIds = payload.payments.map { it.id }.toSet()
+
+        if (payload.tenants.any { it.roomId !in roomIds }) {
+            throw IllegalArgumentException("The backup is inconsistent: a tenant refers to a missing room.")
+        }
+        if (payload.payments.any { it.tenantId !in tenantIds }) {
+            throw IllegalArgumentException("The backup is inconsistent: a payment refers to a missing tenant.")
+        }
+        if (payload.ledger.any { it.tenantId !in tenantIds }) {
+            throw IllegalArgumentException("The backup is inconsistent: a ledger month refers to a missing tenant.")
+        }
+        if (payload.allocations.any { it.paymentId !in paymentIds || it.ledgerMonthId !in ledgerIds }) {
+            throw IllegalArgumentException("The backup is inconsistent: an allocation refers to missing records.")
+        }
+
+        return payload
     }
 
     /**
-     * Import and restore backup from the given URI.
-     * Validates before replacing data. Transactional — all or nothing.
+     * Validates first, then replaces the database contents in a single transaction.
+     * If the restore throws, Room rolls back and the previous data survives intact.
      */
-    suspend fun restoreBackup(context: Context, uri: Uri, password: CharArray): BackupPayload {
-        val encrypted = context.contentResolver.openInputStream(uri)?.use { stream ->
-            val buffer = ByteArrayOutputStream()
-            stream.copyTo(buffer)
-            buffer.toByteArray()
-        } ?: throw IllegalStateException("Unable to read backup file.")
+    suspend fun restore(context: Context, uri: Uri, password: CharArray): BackupPayload {
+        val payload = validate(context, uri, password)
+        val db = repo.database()
 
-        val decrypted = BackupCrypto.decrypt(encrypted, password)
-        val json = decrypted.decodeToString()
-        val payload = gson.fromJson(json, BackupPayload::class.java)
-            ?: throw IllegalArgumentException("Backup file is invalid.")
-
-        // Validate
-        require(payload.version >= 1) { "Unsupported backup version." }
-        require(payload.rooms.isNotEmpty()) { "Backup contains no room data." }
-        require(payload.tenants.isNotEmpty()) { "Backup contains no tenant data." }
-
-        // Transactional restore
-        val db = repo.getDatabase()
         db.withTransaction {
             db.clearAllTables()
-
-            payload.rooms.forEach { db.roomDao().insert(it) }
+            db.roomDao().insertAll(payload.rooms)
             payload.tenants.forEach { db.tenantDao().insert(it) }
             payload.payments.forEach { db.paymentDao().insert(it) }
             db.ledgerDao().insertAll(payload.ledger)
@@ -88,24 +124,16 @@ class BackupManager(private val repo: RentRepository) {
             payload.rentChanges.forEach { db.rentChangeDao().insert(it) }
             payload.settings.forEach { db.settingsDao().upsert(it) }
             db.validationDao().insertAll(payload.validationIssues)
-        }
 
+            // Rebuild the derived projection so restored data is self-consistent.
+            payload.tenants.forEach { repo.recalculateTenant(it.id) }
+        }
         return payload
     }
 
-    /**
-     * Validate a backup file without restoring.
-     */
-    suspend fun validateBackup(context: Context, uri: Uri, password: CharArray): BackupPayload {
-        val encrypted = context.contentResolver.openInputStream(uri)?.use { stream ->
-            val buffer = ByteArrayOutputStream()
-            stream.copyTo(buffer)
-            buffer.toByteArray()
-        } ?: throw IllegalStateException("Unable to read backup file.")
-
-        val decrypted = BackupCrypto.decrypt(encrypted, password)
-        val json = decrypted.decodeToString()
-        return gson.fromJson(json, BackupPayload::class.java)
-            ?: throw IllegalArgumentException("Backup file is invalid.")
+    companion object {
+        const val CURRENT_VERSION = 2
+        const val MIN_PASSWORD = 8
+        const val FILE_EXTENSION = "sadanbackup"
     }
 }

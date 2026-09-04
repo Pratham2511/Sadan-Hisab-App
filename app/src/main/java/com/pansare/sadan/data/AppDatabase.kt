@@ -4,6 +4,7 @@ import android.content.Context
 import androidx.room.Database
 import androidx.room.Room
 import androidx.room.RoomDatabase
+import androidx.room.TypeConverters
 
 @Database(
     entities = [
@@ -19,6 +20,7 @@ import androidx.room.RoomDatabase
     version = 1,
     exportSchema = true
 )
+@TypeConverters(Converters::class)
 abstract class AppDatabase : RoomDatabase() {
     abstract fun roomDao(): RoomDao
     abstract fun tenantDao(): TenantDao
@@ -39,7 +41,11 @@ abstract class AppDatabase : RoomDatabase() {
                     context.applicationContext,
                     AppDatabase::class.java,
                     "pansare_sadan.db"
-                ).build().also { INSTANCE = it }
+                )
+                    // Foreign keys are relied on for cascade integrity of allocations.
+                    .setJournalMode(JournalMode.WRITE_AHEAD_LOGGING)
+                    .build()
+                    .also { INSTANCE = it }
             }
         }
     }

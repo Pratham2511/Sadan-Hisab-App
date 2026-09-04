@@ -1,77 +1,48 @@
 package com.pansare.sadan.ui.navigation
 
-import androidx.compose.runtime.Composable
-import androidx.navigation.NavHostController
-import androidx.navigation.NavType
-import androidx.navigation.compose.NavHost
-import androidx.navigation.compose.composable
-import androidx.navigation.navArgument
-import com.pansare.sadan.ui.AppViewModel
-import com.pansare.sadan.ui.dashboard.DashboardScreen
-import com.pansare.sadan.ui.rooms.RoomsScreen
-import com.pansare.sadan.ui.payments.PaymentsScreen
-import com.pansare.sadan.ui.reports.ReportsScreen
-import com.pansare.sadan.ui.settings.SettingsScreen
-import com.pansare.sadan.ui.tenants.TenantProfileScreen
-import com.pansare.sadan.ui.payments.RecordPaymentScreen
-import com.pansare.sadan.ui.ledger.LedgerScreen
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Assessment
+import androidx.compose.material.icons.filled.Dashboard
+import androidx.compose.material.icons.filled.MeetingRoom
+import androidx.compose.material.icons.filled.Payments
+import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.outlined.Assessment
+import androidx.compose.material.icons.outlined.Dashboard
+import androidx.compose.material.icons.outlined.MeetingRoom
+import androidx.compose.material.icons.outlined.Payments
+import androidx.compose.material.icons.outlined.Settings
+import androidx.compose.ui.graphics.vector.ImageVector
 
-enum class Route(val label: String, val icon: String) {
-    DASHBOARD("Dashboard", "D"),
-    ROOMS("Rooms", "R"),
-    PAYMENTS("Payments", "P"),
-    REPORTS("Reports", "R"),
-    SETTINGS("Settings", "S")
+/** The five primary areas, each with a real Material icon — never a bare letter. */
+enum class TopLevel(
+    val route: String,
+    val label: String,
+    val selectedIcon: ImageVector,
+    val icon: ImageVector
+) {
+    DASHBOARD("dashboard", "Home", Icons.Filled.Dashboard, Icons.Outlined.Dashboard),
+    ROOMS("rooms", "Rooms", Icons.Filled.MeetingRoom, Icons.Outlined.MeetingRoom),
+    PAYMENTS("payments", "Payments", Icons.Filled.Payments, Icons.Outlined.Payments),
+    REPORTS("reports", "Reports", Icons.Filled.Assessment, Icons.Outlined.Assessment),
+    SETTINGS("settings", "Settings", Icons.Filled.Settings, Icons.Outlined.Settings)
 }
 
-@Composable
-fun AppNavigation(
-    navController: NavHostController,
-    vm: AppViewModel
-) {
-    NavHost(navController = navController, startDestination = Route.DASHBOARD.name) {
-        composable(Route.DASHBOARD.name) {
-            DashboardScreen(vm)
-        }
-        composable(Route.ROOMS.name) {
-            RoomsScreen(vm, navController)
-        }
-        composable(Route.PAYMENTS.name) {
-            PaymentsScreen(vm)
-        }
-        composable(Route.REPORTS.name) {
-            ReportsScreen(vm)
-        }
-        composable(Route.SETTINGS.name) {
-            SettingsScreen(vm)
-        }
-        composable(
-            route = "tenant_profile/{tenantId}",
-            arguments = listOf(navArgument("tenantId") { type = NavType.LongType })
-        ) { backStackEntry ->
-            val tenantId = backStackEntry.arguments?.getLong("tenantId") ?: return@composable
-            TenantProfileScreen(vm, tenantId, navController)
-        }
-        composable(
-            route = "edit_tenant/{tenantId}",
-            arguments = listOf(navArgument("tenantId") { type = NavType.LongType })
-        ) { backStackEntry ->
-            val tenantId = backStackEntry.arguments?.getLong("tenantId") ?: return@composable
-            com.pansare.sadan.ui.tenants.EditTenantScreen(vm, tenantId, navController)
-        }
-        composable(
-            route = "record_payment/{tenantId}",
-            arguments = listOf(navArgument("tenantId") { type = NavType.LongType })
-        ) { backStackEntry ->
-            val tenantId = backStackEntry.arguments?.getLong("tenantId") ?: return@composable
-            RecordPaymentScreen(vm, tenantId, navController)
-        }
-        composable(
-            route = "ledger/{tenantId}",
-            arguments = listOf(navArgument("tenantId") { type = NavType.LongType })
-        ) { backStackEntry ->
-            val tenantId = backStackEntry.arguments?.getLong("tenantId") ?: return@composable
-            LedgerScreen(vm, tenantId, navController)
-        }
-    }
+/** Secondary destinations. Arguments are typed and built through helper functions. */
+object Routes {
+    const val ADD_TENANT = "add_tenant?roomId={roomId}"
+    const val TENANT_PROFILE = "tenant/{tenantId}"
+    const val EDIT_TENANT = "tenant/{tenantId}/edit"
+    const val LEDGER = "tenant/{tenantId}/ledger"
+    const val RECORD_PAYMENT = "tenant/{tenantId}/pay"
+    const val EDIT_PAYMENT = "payment/{paymentId}/edit"
+    const val DEFAULTERS = "defaulters"
+    const val ISSUES = "issues"
+    const val IMPORT = "import"
+
+    fun addTenant(roomId: Long = 0L) = "add_tenant?roomId=$roomId"
+    fun tenantProfile(id: Long) = "tenant/$id"
+    fun editTenant(id: Long) = "tenant/$id/edit"
+    fun ledger(id: Long) = "tenant/$id/ledger"
+    fun recordPayment(id: Long) = "tenant/$id/pay"
+    fun editPayment(id: Long) = "payment/$id/edit"
 }

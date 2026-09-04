@@ -1,71 +1,115 @@
 package com.pansare.sadan.data
 
-import androidx.room.*
+import androidx.room.Dao
+import androidx.room.Delete
+import androidx.room.Insert
+import androidx.room.OnConflictStrategy
+import androidx.room.Query
+import androidx.room.TypeConverter
+import androidx.room.Update
+import com.pansare.sadan.domain.RentCertainty
 import kotlinx.coroutines.flow.Flow
+
+/** Enum <-> String converters. Stored as names so backups stay readable and stable. */
+class Converters {
+    @TypeConverter fun tenantStatusToString(v: TenantStatus): String = v.name
+    @TypeConverter fun stringToTenantStatus(v: String): TenantStatus = TenantStatus.valueOf(v)
+
+    @TypeConverter fun paymentModeToString(v: PaymentMode): String = v.name
+    @TypeConverter fun stringToPaymentMode(v: String): PaymentMode = PaymentMode.valueOf(v)
+
+    @TypeConverter fun ledgerStatusToString(v: LedgerStatus): String = v.name
+    @TypeConverter fun stringToLedgerStatus(v: String): LedgerStatus = LedgerStatus.valueOf(v)
+
+    @TypeConverter fun certaintyToString(v: RentCertainty): String = v.name
+    @TypeConverter fun stringToCertainty(v: String): RentCertainty = RentCertainty.valueOf(v)
+
+    @TypeConverter fun issueStatusToString(v: IssueStatus): String = v.name
+    @TypeConverter fun stringToIssueStatus(v: String): IssueStatus = IssueStatus.valueOf(v)
+}
 
 @Dao
 interface RoomDao {
-    @Query("SELECT * FROM rooms ORDER BY wing, roomNumber")
+    @Query("SELECT * FROM rooms ORDER BY sortKey")
     fun observeAll(): Flow<List<RoomEntity>>
+
+    @Query("SELECT COUNT(*) FROM rooms")
+    suspend fun count(): Int
 
     @Query("SELECT * FROM rooms WHERE id = :id")
     suspend fun find(id: Long): RoomEntity?
 
-    @Query("SELECT * FROM rooms WHERE wing = :wing ORDER BY roomNumber")
-    fun observeByWing(wing: String): Flow<List<RoomEntity>>
+    @Query("SELECT * FROM rooms WHERE displayRoomNumber = :display")
+    suspend fun findByDisplay(display: String): RoomEntity?
 
-    @Insert
+    @Query("SELECT * FROM rooms ORDER BY sortKey")
+    suspend fun getAll(): List<RoomEntity>
+
+    @Insert(onConflict = OnConflictStrategy.ABORT)
     suspend fun insert(room: RoomEntity): Long
+
+    @Insert(onConflict = OnConflictStrategy.ABORT)
+    suspend fun insertAll(rooms: List<RoomEntity>)
 
     @Update
     suspend fun update(room: RoomEntity)
 
-    @Query("SELECT * FROM rooms")
-    suspend fun getAll(): List<RoomEntity>
+    /**
+     * Every room with its current active tenant, if any. LEFT JOIN keeps vacant rooms
+     * in the list — the room inventory is independent of tenancy.
+     */
+    @Query("""
+        SELECT r.id AS roomId, r.wing, r.displayRoomNumber, r.sortKey,
+               t.id AS tenantId, t.tenantName, t.mobileNumber, t.monthlyRent,
+               t.occupancyStartMonth, t.status AS tenantStatus
+        FROM rooms r
+        LEFT JOIN tenants t ON t.roomId = r.id AND t.status = 'ACTIVE'
+        ORDER BY r.sortKey
+    """)
+    fun observeRoomsWithTenants(): Flow<List<RoomWithTenantRow>>
+
+    @Query("""
+        SELECT r.id AS roomId, r.wing, r.displayRoomNumber, r.sortKey,
+               t.id AS tenantId, t.tenantName, t.mobileNumber, t.monthlyRent,
+               t.occupancyStartMonth, t.status AS tenantStatus
+        FROM rooms r
+        LEFT JOIN tenants t ON t.roomId = r.id AND t.status = 'ACTIVE'
+        ORDER BY r.sortKey
+    """)
+    suspend fun roomsWithTenants(): List<RoomWithTenantRow>
 }
 
 @Dao
 interface TenantDao {
-    @Query("""
-        SELECT t.id tenantId, t.tenantName, t.mobileNumber, t.monthlyRent,
-               t.occupancyStartMonth, t.status manualStatus, t.remarks,
-               r.id roomId, r.wing, r.displayRoomNumber
-        FROM tenants t JOIN rooms r ON r.id = t.roomId
-        WHERE t.active = 1
-        ORDER BY r.wing, r.roomNumber
-    """)
-    fun observeRows(): Flow<List<TenantRoomRow>>
-
     @Query("SELECT * FROM tenants WHERE id = :id")
     suspend fun find(id: Long): TenantEntity?
 
-    @Query("SELECT * FROM tenants WHERE roomId = :roomId AND active = 1")
-    suspend fun findByRoom(roomId: Long): TenantEntity?
+    @Query("SELECT * FROM tenants WHERE id = :id")
+    fun observe(id: Long): Flow<TenantEntity?>
 
-    @Insert
+    @Query("SELECT * FROM tenants WHERE roomId = :roomId AND status = 'ACTIVE' LIMIT 1")
+    suspend fun findActiveByRoom(roomId: Long): TenantEntity?
+
+    @Query("SELECT COUNT(*) FROM tenants")
+    suspend fun count(): Int
+
+    @Query("SELECT COUNT(*) FROM tenants WHERE status = 'ACTIVE'")
+    suspend fun activeCount(): Int
+
+    @Query("SELECT * FROM tenants WHERE status = 'ACTIVE'")
+    suspend fun getAllActive(): List<TenantEntity>
+
+    @Query("SELECT * FROM tenants")
+    suspend fun getAll(): List<TenantEntity>
+
+    @Insert(onConflict = OnConflictStrategy.ABORT)
     suspend fun insert(tenant: TenantEntity): Long
 
     @Update
     suspend fun update(tenant: TenantEntity)
 
-    @Query("SELECT COUNT(*) FROM tenants")
-    suspend fun count(): Int
-
-    @Query("SELECT * FROM tenants WHERE active = 1")
-    suspend fun getAll(): List<TenantEntity>
-
-    @Query("""
-        SELECT t.id tenantId, t.tenantName, t.mobileNumber, t.monthlyRent,
-               t.occupancyStartMonth, t.status manualStatus, t.remarks,
-               r.id roomId, r.wing, r.displayRoomNumber
-        FROM tenants t JOIN rooms r ON r.id = t.roomId
-        WHERE t.active = 1
-        AND (t.tenantName LIKE '%' || :query || '%'
-             OR r.displayRoomNumber LIKE '%' || :query || '%'
-             OR t.mobileNumber LIKE '%' || :query || '%')
-        ORDER BY r.wing, r.roomNumber
-    """)
-    fun search(query: String): Flow<List<TenantRoomRow>>
+    @Delete
+    suspend fun delete(tenant: TenantEntity)
 }
 
 @Dao
@@ -92,7 +136,32 @@ interface PaymentDao {
     @Query("SELECT * FROM payments WHERE id = :id")
     suspend fun find(id: Long): PaymentEntity?
 
-    @Insert
+    @Query("SELECT * FROM payments")
+    suspend fun getAll(): List<PaymentEntity>
+
+    @Query("SELECT COUNT(*) FROM payments")
+    suspend fun count(): Int
+
+    @Query("SELECT fingerprint FROM payments")
+    suspend fun allFingerprints(): List<String>
+
+    @Query("SELECT COUNT(*) FROM payments WHERE fingerprint = :fingerprint AND id != :excludeId")
+    suspend fun fingerprintExists(fingerprint: String, excludeId: Long = 0): Int
+
+    @Query("SELECT COUNT(*) FROM payments WHERE receiptNumber = :receipt AND receiptNumber != '' AND id != :excludeId")
+    suspend fun receiptExists(receipt: String, excludeId: Long = 0): Int
+
+    @Query("""
+        SELECT MAX(CAST(SUBSTR(receiptNumber, LENGTH(:prefix) + 1) AS INTEGER))
+        FROM payments WHERE receiptNumber LIKE :prefix || '%'
+    """)
+    suspend fun maxReceiptSequence(prefix: String): Int?
+
+    /** Collections in a date window, for the collection reports. */
+    @Query("SELECT COALESCE(SUM(amountPaid), 0) FROM payments WHERE paymentDate BETWEEN :from AND :to")
+    suspend fun collectedBetween(from: Long, to: Long): Long
+
+    @Insert(onConflict = OnConflictStrategy.ABORT)
     suspend fun insert(payment: PaymentEntity): Long
 
     @Update
@@ -100,24 +169,18 @@ interface PaymentDao {
 
     @Delete
     suspend fun delete(payment: PaymentEntity)
-
-    @Query("SELECT * FROM payments")
-    suspend fun getAll(): List<PaymentEntity>
-
-    @Query("SELECT MAX(CAST(SUBSTR(receiptNumber, LENGTH(:prefix) + 1) AS INTEGER)) FROM payments WHERE receiptNumber LIKE :prefix || '%'")
-    suspend fun maxReceiptSequence(prefix: String): Int?
-
-    @Query("SELECT COUNT(*) FROM payments WHERE receiptNumber = :receipt AND id != :excludeId")
-    suspend fun receiptExists(receipt: String, excludeId: Long = 0): Int
 }
 
 @Dao
 interface LedgerDao {
-    @Query("SELECT * FROM monthly_ledger WHERE tenantId = :tenantId AND month BETWEEN :from AND :to ORDER BY month")
-    suspend fun range(tenantId: Long, from: String, to: String): List<MonthlyLedgerEntity>
+    @Query("SELECT * FROM monthly_ledger WHERE tenantId = :tenantId ORDER BY month")
+    suspend fun forTenant(tenantId: Long): List<MonthlyLedgerEntity>
 
     @Query("SELECT * FROM monthly_ledger WHERE tenantId = :tenantId ORDER BY month")
     fun observeForTenant(tenantId: Long): Flow<List<MonthlyLedgerEntity>>
+
+    @Query("SELECT * FROM monthly_ledger WHERE tenantId = :tenantId AND month BETWEEN :from AND :to ORDER BY month")
+    suspend fun range(tenantId: Long, from: String, to: String): List<MonthlyLedgerEntity>
 
     @Query("SELECT * FROM monthly_ledger WHERE tenantId = :tenantId AND month = :month")
     suspend fun find(tenantId: Long, month: String): MonthlyLedgerEntity?
@@ -125,100 +188,103 @@ interface LedgerDao {
     @Query("SELECT * FROM monthly_ledger WHERE id = :id")
     suspend fun findById(id: Long): MonthlyLedgerEntity?
 
+    @Query("SELECT * FROM monthly_ledger")
+    suspend fun getAll(): List<MonthlyLedgerEntity>
+
+    @Query("SELECT MAX(month) FROM monthly_ledger WHERE tenantId = :tenantId")
+    suspend fun latestMonth(tenantId: Long): String?
+
     @Insert(onConflict = OnConflictStrategy.ABORT)
     suspend fun insertAll(rows: List<MonthlyLedgerEntity>)
 
     @Update
     suspend fun updateAll(rows: List<MonthlyLedgerEntity>)
 
+    @Query("DELETE FROM monthly_ledger WHERE tenantId = :tenantId AND month > :lastMonth AND totalPaid = 0")
+    suspend fun trimUnpaidAfter(tenantId: Long, lastMonth: String)
+
+    // ── Aggregates used by the dashboard and reports ──────────────────
+
+    @Query("SELECT COALESCE(SUM(balance), 0) FROM monthly_ledger WHERE month <= :asOf")
+    fun observeTotalOutstanding(asOf: String): Flow<Long>
+
     @Query("SELECT COALESCE(SUM(balance), 0) FROM monthly_ledger WHERE tenantId = :tenantId AND month <= :asOf")
-    suspend fun outstanding(tenantId: Long, asOf: String): Long
+    suspend fun outstandingFor(tenantId: Long, asOf: String): Long
 
-    @Query("SELECT COUNT(*) FROM monthly_ledger WHERE tenantId = :tenantId AND month <= :asOf AND status = 'UNPAID'")
-    suspend fun unpaidCount(tenantId: Long, asOf: String): Int
+    @Query("SELECT COUNT(*) FROM monthly_ledger WHERE month <= :asOf AND status = 'UNPAID'")
+    fun observeUnpaidMonthCount(asOf: String): Flow<Int>
 
-    @Query("SELECT COUNT(*) FROM monthly_ledger WHERE tenantId = :tenantId AND month <= :asOf AND status = 'PARTIALLY_PAID'")
-    suspend fun partiallyPaidCount(tenantId: Long, asOf: String): Int
+    @Query("SELECT COUNT(*) FROM monthly_ledger WHERE month <= :asOf AND status = 'PARTIALLY_PAID'")
+    fun observePartialMonthCount(asOf: String): Flow<Int>
 
-    @Query("SELECT COUNT(*) FROM monthly_ledger WHERE tenantId = :tenantId AND month <= :asOf AND balance > 0")
-    suspend fun unpaidOrPartialCount(tenantId: Long, asOf: String): Int
+    @Query("SELECT COALESCE(SUM(rentDue), 0) FROM monthly_ledger WHERE month = :month AND certainty = 'KNOWN'")
+    suspend fun expectedForMonth(month: String): Long
 
-    @Query("SELECT MIN(month) FROM monthly_ledger WHERE tenantId = :tenantId AND balance > 0 AND month <= :asOf")
-    suspend fun outstandingSince(tenantId: Long, asOf: String): String?
-
-    @Query("SELECT MAX(month) FROM monthly_ledger WHERE tenantId = :tenantId AND balance = 0 AND month <= :asOf")
-    suspend fun lastPaidUpTo(tenantId: Long, asOf: String): String?
-
-    @Query("SELECT * FROM monthly_ledger")
-    suspend fun getAll(): List<MonthlyLedgerEntity>
-
-    // Monthly collection report
-    @Query("""
-        SELECT COALESCE(SUM(applicableRent), 0) FROM monthly_ledger
-        WHERE month = :month
-    """)
-    suspend fun expectedRentForMonth(month: String): Long
-
-    @Query("""
-        SELECT COALESCE(SUM(totalPaid), 0) FROM monthly_ledger
-        WHERE month = :month
-    """)
+    @Query("SELECT COALESCE(SUM(totalPaid), 0) FROM monthly_ledger WHERE month = :month")
     suspend fun collectedForMonth(month: String): Long
 
-    @Query("""
-        SELECT COUNT(*) FROM monthly_ledger
-        WHERE month = :month AND status = :status
-    """)
+    @Query("SELECT COUNT(*) FROM monthly_ledger WHERE month = :month AND status = :status")
     suspend fun countByStatusForMonth(month: String, status: LedgerStatus): Int
 
-    // Yearly report
-    @Query("""
-        SELECT COALESCE(SUM(applicableRent), 0) FROM monthly_ledger
-        WHERE month BETWEEN :fromMonth AND :toMonth
-    """)
-    suspend fun expectedRentForRange(fromMonth: String, toMonth: String): Long
+    @Query("SELECT COALESCE(SUM(rentDue), 0) FROM monthly_ledger WHERE month BETWEEN :from AND :to AND certainty = 'KNOWN'")
+    suspend fun expectedForRange(from: String, to: String): Long
 
-    @Query("""
-        SELECT COALESCE(SUM(totalPaid), 0) FROM monthly_ledger
-        WHERE month BETWEEN :fromMonth AND :toMonth
-    """)
-    suspend fun collectedForRange(fromMonth: String, toMonth: String): Long
+    @Query("SELECT COALESCE(SUM(totalPaid), 0) FROM monthly_ledger WHERE month BETWEEN :from AND :to")
+    suspend fun collectedForRange(from: String, to: String): Long
+
+    @Query("SELECT COALESCE(SUM(balance), 0) FROM monthly_ledger WHERE certainty != 'KNOWN' AND month <= :asOf")
+    suspend fun unresolvedOutstanding(asOf: String): Long
 }
 
 @Dao
 interface AllocationDao {
-    @Insert
+    @Insert(onConflict = OnConflictStrategy.ABORT)
     suspend fun insertAll(rows: List<PaymentAllocationEntity>)
 
     @Query("SELECT * FROM payment_allocations WHERE paymentId = :paymentId")
     suspend fun byPayment(paymentId: Long): List<PaymentAllocationEntity>
 
-    @Query("SELECT COALESCE(SUM(allocatedAmount), 0) FROM payment_allocations WHERE ledgerMonthId = :ledgerId")
-    suspend fun totalForLedger(ledgerId: Long): Long
+    @Query("""
+        SELECT * FROM payment_allocations
+        WHERE ledgerMonthId IN (SELECT id FROM monthly_ledger WHERE tenantId = :tenantId)
+    """)
+    suspend fun byTenant(tenantId: Long): List<PaymentAllocationEntity>
 
-    @Query("SELECT MAX(p.paymentDate) FROM payments p JOIN payment_allocations a ON a.paymentId = p.id WHERE a.ledgerMonthId = :ledgerId")
-    suspend fun lastPaymentDate(ledgerId: Long): Long?
+    @Query("SELECT * FROM payment_allocations")
+    suspend fun getAll(): List<PaymentAllocationEntity>
 
     @Query("DELETE FROM payment_allocations WHERE paymentId = :paymentId")
     suspend fun deleteByPayment(paymentId: Long)
 
-    @Query("SELECT * FROM payment_allocations")
-    suspend fun getAll(): List<PaymentAllocationEntity>
+    /** Traces each ledger month back to the payments that settled it. */
+    @Query("""
+        SELECT a.id AS allocationId, a.paymentId, a.ledgerMonthId, a.allocatedAmount,
+               l.month, p.receiptNumber, p.paymentDate, p.paymentMode
+        FROM payment_allocations a
+        JOIN monthly_ledger l ON l.id = a.ledgerMonthId
+        JOIN payments p ON p.id = a.paymentId
+        WHERE l.tenantId = :tenantId
+        ORDER BY l.month, p.paymentDate
+    """)
+    fun observeDetailsForTenant(tenantId: Long): Flow<List<AllocationDetailRow>>
 }
 
 @Dao
 interface RentChangeDao {
-    @Query("SELECT * FROM rent_changes WHERE tenantId = :tenantId AND effectiveFromMonth <= :month ORDER BY effectiveFromMonth DESC LIMIT 1")
-    suspend fun applicable(tenantId: Long, month: String): RentChangeEntity?
-
-    @Insert(onConflict = OnConflictStrategy.ABORT)
-    suspend fun insert(change: RentChangeEntity): Long
-
     @Query("SELECT * FROM rent_changes WHERE tenantId = :tenantId ORDER BY effectiveFromMonth")
     suspend fun forTenant(tenantId: Long): List<RentChangeEntity>
 
+    @Query("SELECT * FROM rent_changes WHERE tenantId = :tenantId ORDER BY effectiveFromMonth")
+    fun observeForTenant(tenantId: Long): Flow<List<RentChangeEntity>>
+
     @Query("SELECT * FROM rent_changes")
     suspend fun getAll(): List<RentChangeEntity>
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun insert(change: RentChangeEntity): Long
+
+    @Query("DELETE FROM rent_changes WHERE tenantId = :tenantId AND effectiveFromMonth = :month")
+    suspend fun deleteAt(tenantId: Long, month: String)
 }
 
 @Dao
@@ -241,9 +307,21 @@ interface ValidationDao {
     @Insert
     suspend fun insertAll(rows: List<ImportValidationIssueEntity>)
 
-    @Query("SELECT * FROM import_validation_issues ORDER BY roomDisplay")
+    @Insert
+    suspend fun insert(row: ImportValidationIssueEntity): Long
+
+    @Query("SELECT * FROM import_validation_issues ORDER BY status, createdAt DESC")
     fun observeAll(): Flow<List<ImportValidationIssueEntity>>
 
-    @Query("SELECT * FROM import_validation_issues ORDER BY roomDisplay")
+    @Query("SELECT COUNT(*) FROM import_validation_issues WHERE status = 'OPEN'")
+    fun observeOpenCount(): Flow<Int>
+
+    @Query("SELECT * FROM import_validation_issues")
     suspend fun getAll(): List<ImportValidationIssueEntity>
+
+    @Query("UPDATE import_validation_issues SET status = 'RESOLVED' WHERE id = :id")
+    suspend fun resolve(id: Long)
+
+    @Query("DELETE FROM import_validation_issues WHERE id = :id")
+    suspend fun delete(id: Long)
 }

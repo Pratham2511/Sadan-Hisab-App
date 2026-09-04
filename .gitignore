@@ -1,30 +1,52 @@
+# Build output
 .gradle/
 build/
 app/build/
-local.properties
+.kotlin/
+captures/
 *.iml
 .idea/
-captures/
+local.properties
 
-# Private Data & Production DB
-private-data/
+# Android artefacts — never commit a build
+*.apk
+*.aab
+*.aar
+*.dex
+output-metadata.json
+
+# Live databases and their journals
 *.db
+*.db-shm
+*.db-wal
 *.sqlite
 *.sqlite3
-*.csv
-*.json
-# Private Data & Production DB
-private-data/
-*.db
-*.sqlite
-*.sqlite3
-*.csv
-*.json
+
+# Backups, exports and anything that may contain real tenant data
+*.sadanbackup
 *.psbackup
 *.backup
+private-data/
+exports/
+imports/
+receipts/
+*.csv
+*.xls
+*.xlsx
 *.pdf
 
-# Environment / Tools
+# Local secrets and signing material
+*.jks
+*.keystore
+keystore.properties
+signing.properties
+secrets.properties
+.env
+
+# Tooling and temporary files
 jdk-*
+toolchain/
 .qmind/
-Instructions
+*.log
+*.tmp
+.DS_Store

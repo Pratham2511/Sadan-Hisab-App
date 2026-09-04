@@ -25,6 +25,15 @@ object MonthKey {
 
     fun current(): String = format(YearMonth.now())
 
+    /** The month immediately after [monthKey]. Used to detect gaps in a ledger run. */
+    fun next(monthKey: String): String = format(parse(monthKey).plusMonths(1))
+
+    /** The month immediately before [monthKey]. */
+    fun previous(monthKey: String): String = format(parse(monthKey).minusMonths(1))
+
+    /** True when [value] is a well-formed yyyy-MM key. */
+    fun isValid(value: String): Boolean = runCatching { parse(value) }.isSuccess
+
     fun displayName(monthKey: String): String {
         val ym = parse(monthKey)
         return "${ym.month.name.lowercase().replaceFirstChar { it.uppercase() }} ${ym.year}"
