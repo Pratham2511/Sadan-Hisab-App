@@ -1,7 +1,6 @@
 package com.pansare.sadan.util
 
 import android.util.Xml
-import com.pansare.sadan.domain.MonthKey
 import com.pansare.sadan.domain.RawPaymentRow
 import org.xmlpull.v1.XmlPullParser
 import java.io.ByteArrayInputStream
@@ -30,8 +29,13 @@ data class ParsedReceiptDetails(
 )
 
 object XlsxImporter {
+    /**
+     * Legacy register forms include both `305/29/09/2016` and `270  5/10/2017`.
+     * The separator immediately after the receipt is intentionally constrained; an older
+     * `\D+` version could start a false receipt at an amount such as `1500, 370/08/02/2017`.
+     */
     private val receiptDateRegex = Regex(
-        """\b(\d{3,8})\D+(\d{1,3})\s*[./-]\s*(\d(?:\s*\d)?)\s*[./-]\s*(\d{2,4})\b"""
+        """\b(\d{3,8})\s*(?:/|\s+)\s*(\d{1,3})\s*[./-]\s*(\d(?:\s*\d)?)\s*[./-]\s*(\d{2,4})\b"""
     )
 
     /** Lists every worksheet in an XLSX workbook. No row/column limits are assumed. */
@@ -107,7 +111,7 @@ object XlsxImporter {
             val rawReceipt = cell(colReceipt)
             val rawUnpaidPeriod = cell(colUnpaidPeriod)
 
-            // Totals/footer rows have no room, tenant or receipt and must never become payments.
+            // Formula/footer rows (such as SUM totals) have no room, tenant or receipt.
             if (rawRoom.isBlank() && rawTenant.isBlank() && rawReceipt.isBlank()) continue
 
             val room = normalizeRoomNumber(rawRoom)
@@ -130,7 +134,7 @@ object XlsxImporter {
                     )
                 }
             } else {
-                // Keep an unrecognised source row visible to validation instead of silently dropping it.
+                // Keep an unrecognised source row visible to validation instead of dropping it.
                 val period = parseUnpaidPeriod(rawUnpaidPeriod)
                 results += RawPaymentRow(
                     rowNumber = i + 1,
@@ -170,7 +174,7 @@ object XlsxImporter {
         return Regex("""\d+""").find(clean)?.value?.toLongOrNull() ?: 0L
     }
 
-    /** Parses all historical receipt entries embedded in one free-form cell. */
+    /** Parses all historical receipts embedded in a single spreadsheet cell. */
     fun parseReceiptEntries(text: String): List<ParsedReceiptDetails> {
         if (text.isBlank()) return emptyList()
         val matches = receiptDateRegex.findAll(text).toList()
@@ -183,7 +187,7 @@ object XlsxImporter {
         }
     }
 
-    /** Parses one receipt segment without mistaking a four-digit year for a payment amount. */
+    /** Parses one receipt segment without mistaking a four-digit year for payment amount. */
     fun parseReceiptDetails(text: String): ParsedReceiptDetails {
         if (text.isBlank()) return ParsedReceiptDetails()
 
@@ -216,6 +220,7 @@ object XlsxImporter {
     }
 
     private fun extractPaymentAmount(text: String, dateMatch: MatchResult?, receiptNo: String): Long {
+        // Values explicitly following = / ₹ / Rs are the strongest signal in this register.
         val explicit = Regex("""(?:=|₹|\bRS\.?\s*)\s*(\d{2,8})\b""", RegexOption.IGNORE_CASE)
             .findAll(text)
             .mapNotNull { it.groupValues[1].toLongOrNull() }
@@ -242,7 +247,9 @@ object XlsxImporter {
             isLenient = false
             timeZone = TimeZone.getDefault()
         }
-        return runCatching { fmt.parse("%04d-%02d-%02d".format(Locale.US, year, month, day))?.time }.getOrNull()
+        return runCatching {
+            fmt.parse("%04d-%02d-%02d".format(Locale.US, year, month, day))?.time
+        }.getOrNull()
     }
 
     fun parseUnpaidPeriod(text: String): Pair<String, String> {
@@ -278,7 +285,8 @@ object XlsxImporter {
 
         val y2 = year(match.groupValues[4], match.groupValues[2])
         val y1 = year(match.groupValues[2], match.groupValues[4])
-        return "%04d-%02d".format(Locale.US, y1, m1) to "%04d-%02d".format(Locale.US, y2, m2)
+        return "%04d-%02d".format(Locale.US, y1, m1) to
+            "%04d-%02d".format(Locale.US, y2, m2)
     }
 
     private fun normalizeHeader(value: String): String = value
@@ -338,18 +346,19 @@ object XlsxImporter {
                     }
                 }
                 XmlPullParser.TEXT -> if (capture != null) text.append(parser.text)
-                XmlPullParser.END_TAG -> when (parser.name) {
-                    capture -> {
+                XmlPullParser.END_TAG -> {
+                    if (capture != null && parser.name == capture) {
                         current[currentColumn] = decode(text.toString())
                         capture = null
-                    }
-                    "c" -> {
-                        currentColumn = -1
-                        cellType = ""
-                    }
-                    "row" -> {
-                        val max = current.keys.maxOrNull() ?: -1
-                        rows += if (max < 0) emptyList() else List(max + 1) { current[it].orEmpty() }
+                    } else when (parser.name) {
+                        "c" -> {
+                            currentColumn = -1
+                            cellType = ""
+                        }
+                        "row" -> {
+                            val max = current.keys.maxOrNull() ?: -1
+                            rows += if (max < 0) emptyList() else List(max + 1) { current[it].orEmpty() }
+                        }
                     }
                 }
             }
