@@ -31,11 +31,11 @@ data class ParsedReceiptDetails(
 object XlsxImporter {
     /**
      * Legacy register forms include both `305/29/09/2016` and `270  5/10/2017`.
-     * Day/month are range-limited here so an amount immediately before the next receipt
-     * cannot accidentally be interpreted as another receipt number/date.
+     * Day/month are range-limited so an amount before the next receipt cannot become
+     * a false receipt. The year may be followed immediately by text in old sheets.
      */
     private val receiptDateRegex = Regex(
-        """\b(\d{3,8})\s*(?:/|\s+)\s*(0{0,2}(?:[1-9]|[12]\d|3[01]))\s*[./-]\s*((?:0\s*)?(?:[1-9]|1[0-2]))\s*[./-]\s*(\d{2,4})\b"""
+        """\b(\d{3,8})\s*(?:/|\s+)\s*(0{0,2}(?:[1-9]|[12]\d|3[01]))\s*[./-]\s*((?:0\s*)?(?:[1-9]|1[0-2]))\s*[./-]\s*(\d{2,4})(?!\d)"""
     )
 
     fun listSheets(inputStream: InputStream): List<String> {
@@ -214,24 +214,22 @@ object XlsxImporter {
             it > 0L && it.toString() != receiptNo && it !in 1900L..2100L
         }
 
-        // In this legacy register the `= amount` is the receipt total. Prefer it over notes
-        // such as "Rs 4000 advance" that may appear later in the same receipt description.
-        Regex("""=\s*(\d{2,8})\b""")
+        Regex("""=\s*(\d{2,8})(?!\d)""")
             .find(text)
             ?.groupValues?.get(1)?.toLongOrNull()
             ?.let(::valid)
             ?.let { return it }
 
-        Regex("""(?:₹|\bRS\.?\s*)\s*(\d{2,8})\b""", RegexOption.IGNORE_CASE)
+        Regex("""(?:₹|\bRS\.?\s*)\s*(\d{2,8})(?!\d)""", RegexOption.IGNORE_CASE)
             .findAll(text)
             .mapNotNull { valid(it.groupValues[1].toLongOrNull()) }
             .firstOrNull()
             ?.let { return it }
 
         val start = dateMatch?.range?.last?.plus(1) ?: 0
-        return Regex("""\b\d{2,8}\b""")
+        return Regex("""(?<!\d)(\d{2,8})(?!\d)""")
             .findAll(text.substring(start))
-            .mapNotNull { valid(it.value.toLongOrNull()) }
+            .mapNotNull { valid(it.groupValues[1].toLongOrNull()) }
             .lastOrNull() ?: 0L
     }
 
