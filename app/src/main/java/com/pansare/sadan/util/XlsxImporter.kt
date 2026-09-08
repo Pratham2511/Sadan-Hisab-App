@@ -38,14 +38,12 @@ object XlsxImporter {
         """\b(\d{3,8})\s*(?:/|\s+)\s*(0{0,2}(?:[1-9]|[12]\d|3[01]))\s*[./-]\s*((?:0\s*)?(?:[1-9]|1[0-2]))\s*[./-]\s*(\d{2,4})\b"""
     )
 
-    /** Lists every worksheet in an XLSX workbook. No row/column limits are assumed. */
     fun listSheets(inputStream: InputStream): List<String> {
         val bytes = inputStream.use { it.readBytes() }
         val workbook = readZipEntry(bytes, "xl/workbook.xml") ?: return emptyList()
         return parseWorkbookXml(ByteArrayInputStream(workbook))
     }
 
-    /** Parses one worksheet into a rectangular matrix while preserving blank cells. */
     fun parseSheet(inputStream: InputStream, targetSheetName: String? = null): RawSheetData {
         val bytes = inputStream.use { it.readBytes() }
         val workbook = readZipEntry(bytes, "xl/workbook.xml")
@@ -77,10 +75,6 @@ object XlsxImporter {
         )
     }
 
-    /**
-     * Converts an Excel matrix into payment entries. A single spreadsheet row may contain
-     * many historical receipt entries, so each recognised receipt becomes its own payment.
-     */
     fun parseRowsFromMatrix(matrix: List<List<String>>): List<RawPaymentRow> {
         if (matrix.isEmpty()) return emptyList()
 
@@ -216,18 +210,28 @@ object XlsxImporter {
     }
 
     private fun extractPaymentAmount(text: String, dateMatch: MatchResult?, receiptNo: String): Long {
-        val explicit = Regex("""(?:=|₹|\bRS\.?\s*)\s*(\d{2,8})\b""", RegexOption.IGNORE_CASE)
+        fun valid(value: Long?): Long? = value?.takeIf {
+            it > 0L && it.toString() != receiptNo && it !in 1900L..2100L
+        }
+
+        // In this legacy register the `= amount` is the receipt total. Prefer it over notes
+        // such as "Rs 4000 advance" that may appear later in the same receipt description.
+        Regex("""=\s*(\d{2,8})\b""")
+            .find(text)
+            ?.groupValues?.get(1)?.toLongOrNull()
+            ?.let(::valid)
+            ?.let { return it }
+
+        Regex("""(?:₹|\bRS\.?\s*)\s*(\d{2,8})\b""", RegexOption.IGNORE_CASE)
             .findAll(text)
-            .mapNotNull { it.groupValues[1].toLongOrNull() }
-            .filter { it > 0L && it.toString() != receiptNo && it !in 1900L..2100L }
-            .lastOrNull()
-        if (explicit != null) return explicit
+            .mapNotNull { valid(it.groupValues[1].toLongOrNull()) }
+            .firstOrNull()
+            ?.let { return it }
 
         val start = dateMatch?.range?.last?.plus(1) ?: 0
         return Regex("""\b\d{2,8}\b""")
             .findAll(text.substring(start))
-            .mapNotNull { it.value.toLongOrNull() }
-            .filter { value -> value > 0L && value !in 1900L..2100L && value.toString() != receiptNo }
+            .mapNotNull { valid(it.value.toLongOrNull()) }
             .lastOrNull() ?: 0L
     }
 
