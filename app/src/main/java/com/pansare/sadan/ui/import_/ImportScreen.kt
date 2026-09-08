@@ -16,7 +16,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.outlined.UploadFile
@@ -24,7 +24,6 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
-import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -34,6 +33,7 @@ import androidx.compose.material3.ScrollableTabRow
 import androidx.compose.material3.Tab
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
+import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -51,12 +51,10 @@ import com.pansare.sadan.ui.components.ConfirmDialog
 import com.pansare.sadan.ui.components.EmptyState
 import com.pansare.sadan.ui.components.SectionHeader
 import com.pansare.sadan.ui.components.UnresolvedNotice
+import com.pansare.sadan.ui.dryRunImportWithTenantCheck
 import com.pansare.sadan.util.CurrencyUtils
 
-/**
- * Two-stage CSV/XLSX import: pick a file, select worksheet if multiple exist,
- * read the dry-run verdict, then decide.
- */
+/** Two-stage CSV/XLSX import: parse first, show every outcome, then commit only valid entries. */
 @Composable
 fun ImportScreen(vm: AppViewModel, onBack: () -> Unit, onViewIssues: () -> Unit) {
     var result by remember { mutableStateOf<ImportResult?>(null) }
@@ -70,7 +68,7 @@ fun ImportScreen(vm: AppViewModel, onBack: () -> Unit, onViewIssues: () -> Unit)
     fun runDryRun(uri: Uri, sheetName: String?) {
         busy = true
         result = null
-        vm.dryRunImport(uri, sheetName) { outcome ->
+        vm.dryRunImportWithTenantCheck(uri, sheetName) { outcome ->
             result = outcome
             busy = false
         }
@@ -104,9 +102,8 @@ fun ImportScreen(vm: AppViewModel, onBack: () -> Unit, onViewIssues: () -> Unit)
         val current = result
         ConfirmDialog(
             title = "Import ${current?.importedCount ?: 0} payments?",
-            message = "Only the valid rows are imported. Rows needing review and rejected " +
-                "rows are recorded as issues instead, so nothing is lost. " +
-                "If any row fails while saving, the whole import is rolled back.",
+            message = "Only entries marked ready are imported. Anything ambiguous stays in review, " +
+                "and the database is rolled back if a ready payment fails while saving.",
             confirmLabel = "Import",
             onConfirm = {
                 confirming = false
@@ -123,8 +120,14 @@ fun ImportScreen(vm: AppViewModel, onBack: () -> Unit, onViewIssues: () -> Unit)
     }
 
     Scaffold(
+        containerColor = MaterialTheme.colorScheme.background,
         topBar = {
             TopAppBar(
+                colors = TopAppBarDefaults.topAppBarColors(
+                    containerColor = MaterialTheme.colorScheme.primaryContainer,
+                    titleContentColor = MaterialTheme.colorScheme.onPrimaryContainer,
+                    navigationIconContentColor = MaterialTheme.colorScheme.onPrimaryContainer
+                ),
                 title = { Text("Import Payments") },
                 navigationIcon = {
                     IconButton(onClick = onBack) {
@@ -150,9 +153,9 @@ fun ImportScreen(vm: AppViewModel, onBack: () -> Unit, onViewIssues: () -> Unit)
                         )
                         Spacer(Modifier.height(6.dp))
                         Text(
-                            "Supports Excel workbooks with multiple sheets (e.g. 'B Wing', 'A Wing') and CSV files. " +
-                                "Recognised columns: Room/Roman, Tenant Name, Rent, Receipt no. & Date, Unpaid Rent/Months. " +
-                                "The file is validated first and nothing is saved until you confirm.",
+                            "Recognises Room/Roman, Tenant Name, Rent, Receipt no. & Date and Unpaid Rent/Months. " +
+                                "One tenant row may contain many historical receipts; each receipt is checked separately. " +
+                                "There is no fixed spreadsheet row or column limit.",
                             style = MaterialTheme.typography.bodyMedium
                         )
                         Spacer(Modifier.height(12.dp))
@@ -173,7 +176,6 @@ fun ImportScreen(vm: AppViewModel, onBack: () -> Unit, onViewIssues: () -> Unit)
                             modifier = Modifier.heightIn(min = 48.dp)
                         ) {
                             Icon(Icons.Outlined.UploadFile, contentDescription = null)
-                            Spacer(Modifier.height(0.dp))
                             Text("  Select file")
                         }
                         fileName?.let {
@@ -232,13 +234,13 @@ fun ImportScreen(vm: AppViewModel, onBack: () -> Unit, onViewIssues: () -> Unit)
                                 fontWeight = FontWeight.SemiBold
                             )
                             Spacer(Modifier.height(8.dp))
-                            CountRow("Rows read", total)
+                            CountRow("Payment entries read", total)
                             CountRow("Ready to import", current.importedCount)
                             CountRow("Need review", current.reviewCount)
                             CountRow("Rejected", current.rejectedCount)
                             Spacer(Modifier.height(8.dp))
                             Text(
-                                "Every row is accounted for: " +
+                                "Every parsed payment entry is accounted for: " +
                                     "${current.importedCount} + ${current.reviewCount} + " +
                                     "${current.rejectedCount} = $total.",
                                 style = MaterialTheme.typography.bodySmall
@@ -246,8 +248,7 @@ fun ImportScreen(vm: AppViewModel, onBack: () -> Unit, onViewIssues: () -> Unit)
                             if (current.valid.isNotEmpty()) {
                                 Spacer(Modifier.height(4.dp))
                                 Text(
-                                    "Total value of importable rows: " +
-                                        CurrencyUtils.format(current.valid.sumOf { it.amount }),
+                                    "Total value of ready payments: " + CurrencyUtils.format(current.valid.sumOf { it.amount }),
                                     style = MaterialTheme.typography.bodySmall
                                 )
                             }
@@ -257,24 +258,27 @@ fun ImportScreen(vm: AppViewModel, onBack: () -> Unit, onViewIssues: () -> Unit)
                                     onClick = { confirming = true },
                                     enabled = !busy && current.importedCount > 0,
                                     modifier = Modifier.heightIn(min = 48.dp)
-                                ) { Text("Import ${current.importedCount} rows") }
+                                ) { Text("Import ${current.importedCount}") }
                                 OutlinedButton(
-                                    onClick = { result = null; fileName = null; currentUri = null; sheets = emptyList(); selectedSheet = null },
+                                    onClick = {
+                                        result = null
+                                        fileName = null
+                                        currentUri = null
+                                        sheets = emptyList()
+                                        selectedSheet = null
+                                    },
                                     modifier = Modifier.heightIn(min = 48.dp)
                                 ) { Text("Discard") }
                             }
                             if (total == 0) {
                                 Spacer(Modifier.height(8.dp))
                                 UnresolvedNotice(
-                                    "Could not recognise a room or tenant column on this sheet" +
-                                        (selectedSheet?.let { " ('$it')" } ?: "") +
-                                        ". Choose another sheet or check that column headers match Room, Tenant, Rent, Receipt."
+                                    "No payment entries were recognised on this sheet. Check the header names or select another worksheet."
                                 )
                             } else if (current.importedCount == 0) {
                                 Spacer(Modifier.height(8.dp))
                                 UnresolvedNotice(
-                                    "No row in this sheet can be imported as it stands. " +
-                                        "Fix the reasons listed below and try again."
+                                    "Nothing is ready to import yet. The reasons below show exactly what needs attention."
                                 )
                             }
                         }
@@ -283,15 +287,21 @@ fun ImportScreen(vm: AppViewModel, onBack: () -> Unit, onViewIssues: () -> Unit)
 
                 if (current.review.isNotEmpty()) {
                     item { SectionHeader("Needs review (${current.review.size})") }
-                    items(current.review, key = { "r${it.rowNumber}${it.kind}" }) {
-                        IssueRow(it, "This row is not imported until it is corrected.")
+                    itemsIndexed(
+                        items = current.review,
+                        key = { index, issue -> "r_${index}_${issue.rowNumber}_${issue.kind}" }
+                    ) { _, issue ->
+                        IssueRow(issue, "This entry is not imported until it is corrected.")
                     }
                 }
 
                 if (current.rejected.isNotEmpty()) {
                     item { SectionHeader("Rejected (${current.rejected.size})") }
-                    items(current.rejected, key = { "x${it.rowNumber}${it.kind}" }) {
-                        IssueRow(it, "This row cannot be imported.")
+                    itemsIndexed(
+                        items = current.rejected,
+                        key = { index, issue -> "x_${index}_${issue.rowNumber}_${issue.kind}" }
+                    ) { _, issue ->
+                        IssueRow(issue, "This entry cannot be imported.")
                     }
                 }
 
@@ -308,7 +318,7 @@ fun ImportScreen(vm: AppViewModel, onBack: () -> Unit, onViewIssues: () -> Unit)
                     EmptyState(
                         icon = Icons.Outlined.UploadFile,
                         title = "No file checked yet",
-                        message = "Select an Excel (.xlsx) or CSV file to see exactly what would be imported."
+                        message = "Select an Excel (.xlsx) or CSV file to preview exactly what will happen."
                     )
                 }
             }
@@ -326,11 +336,7 @@ private fun CountRow(label: String, value: Int) {
         horizontalArrangement = Arrangement.SpaceBetween
     ) {
         Text(label, style = MaterialTheme.typography.bodyMedium)
-        Text(
-            value.toString(),
-            style = MaterialTheme.typography.bodyMedium,
-            fontWeight = FontWeight.SemiBold
-        )
+        Text(value.toString(), style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.SemiBold)
     }
 }
 
@@ -338,24 +344,18 @@ private fun CountRow(label: String, value: Int) {
 private fun IssueRow(issue: ImportIssue, consequence: String) {
     Card(
         modifier = Modifier.fillMaxWidth(),
-        colors = CardDefaults.cardColors(
-            containerColor = MaterialTheme.colorScheme.surfaceVariant
-        )
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
     ) {
         Column(Modifier.padding(14.dp)) {
             Text(
-                "Row ${issue.rowNumber}" +
-                    if (issue.reference.isNotBlank()) " — ${issue.reference}" else "",
+                "Row ${issue.rowNumber}" + if (issue.reference.isNotBlank()) " — ${issue.reference}" else "",
                 style = MaterialTheme.typography.titleSmall,
                 fontWeight = FontWeight.SemiBold
             )
             Spacer(Modifier.height(4.dp))
             Text(issue.message, style = MaterialTheme.typography.bodyMedium)
             Spacer(Modifier.height(4.dp))
-            Text(
-                "$consequence Reason code: ${issue.kind.name}.",
-                style = MaterialTheme.typography.bodySmall
-            )
+            Text("$consequence Reason code: ${issue.kind.name}.", style = MaterialTheme.typography.bodySmall)
         }
     }
 }

@@ -1,9 +1,7 @@
 package com.pansare.sadan.ui.theme
 
-import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Typography
-import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.graphics.Color
@@ -11,68 +9,49 @@ import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.sp
 
-// A restrained, business-like palette. Green reads as "settled", amber as "attention",
-// red as "owing" — but every status is also spelled out in words in the UI.
-
-private val Green = Color(0xFF2E7D4F)
-private val GreenDark = Color(0xFF1B5E3A)
-private val GreenLight = Color(0xFF7FCFA0)
-private val Amber = Color(0xFFB26A00)
-private val Red = Color(0xFFC0392B)
-private val Slate = Color(0xFF5A6470)
+// Solarized-light inspired background with a deeper teal for navigation/chrome.
+private val SolarBase3 = Color(0xFFFDF6E3)
+private val SolarBase2 = Color(0xFFEEE8D5)
+private val SolarBase1 = Color(0xFF93A1A1)
+private val SolarBase00 = Color(0xFF657B83)
+private val SolarBase01 = Color(0xFF586E75)
+private val SolarBase02 = Color(0xFF073642)
+private val SolarTeal = Color(0xFF2AA198)
+private val SolarBlue = Color(0xFF268BD2)
+private val SolarGreen = Color(0xFF859900)
+private val SolarYellow = Color(0xFFB58900)
+private val SolarRed = Color(0xFFDC322F)
 
 object StatusColors {
-    val paid = Color(0xFF1E7B45)
-    val partial = Color(0xFFB26A00)
-    val unpaid = Color(0xFFC0392B)
-    val vacant = Color(0xFF6B7280)
+    val paid = SolarGreen
+    val partial = SolarYellow
+    val unpaid = SolarRed
+    val vacant = SolarBase00
 }
 
-private val LightScheme = lightColorScheme(
-    primary = Green,
+private val SolarizedLightScheme = lightColorScheme(
+    primary = SolarTeal,
     onPrimary = Color.White,
-    primaryContainer = Color(0xFFD3EEDD),
-    onPrimaryContainer = GreenDark,
-    secondary = Slate,
+    primaryContainer = SolarBase02,
+    onPrimaryContainer = SolarBase3,
+    secondary = SolarBlue,
     onSecondary = Color.White,
-    secondaryContainer = Color(0xFFE2E6EB),
-    onSecondaryContainer = Color(0xFF2A313A),
-    tertiary = Amber,
+    secondaryContainer = Color(0xFFD7EAF3),
+    onSecondaryContainer = SolarBase02,
+    tertiary = SolarYellow,
     onTertiary = Color.White,
-    error = Red,
+    error = SolarRed,
     onError = Color.White,
-    errorContainer = Color(0xFFFBE1DE),
-    onErrorContainer = Color(0xFF7A1F16),
-    background = Color(0xFFF7F8F7),
-    onBackground = Color(0xFF1A1C1A),
-    surface = Color.White,
-    onSurface = Color(0xFF1A1C1A),
-    surfaceVariant = Color(0xFFEDEFEE),
-    onSurfaceVariant = Color(0xFF4A5158),
-    outline = Color(0xFFB9BFC4),
-    outlineVariant = Color(0xFFDCE0E3)
-)
-
-private val DarkScheme = darkColorScheme(
-    primary = GreenLight,
-    onPrimary = Color(0xFF00391F),
-    primaryContainer = Color(0xFF1B5E3A),
-    onPrimaryContainer = Color(0xFFD3EEDD),
-    secondary = Color(0xFFB6C0CB),
-    onSecondary = Color(0xFF212A33),
-    tertiary = Color(0xFFF2B65C),
-    onTertiary = Color(0xFF432C00),
-    error = Color(0xFFF2B8B2),
-    onError = Color(0xFF601410),
-    errorContainer = Color(0xFF8C2A20),
-    onErrorContainer = Color(0xFFFBE1DE),
-    background = Color(0xFF12140F),
-    onBackground = Color(0xFFE3E3DE),
-    surface = Color(0xFF1A1C19),
-    onSurface = Color(0xFFE3E3DE),
-    surfaceVariant = Color(0xFF424940),
-    onSurfaceVariant = Color(0xFFC2C9BE),
-    outline = Color(0xFF8C9389)
+    errorContainer = Color(0xFFF9DAD4),
+    onErrorContainer = Color(0xFF7C221E),
+    background = SolarBase3,
+    onBackground = SolarBase02,
+    surface = Color(0xFFFFFBF0),
+    onSurface = SolarBase02,
+    surfaceVariant = SolarBase2,
+    onSurfaceVariant = SolarBase01,
+    outline = SolarBase1,
+    outlineVariant = Color(0xFFD8D1BC)
 )
 
 private val AppTypography = Typography(
@@ -87,13 +66,11 @@ private val AppTypography = Typography(
     labelSmall = TextStyle(fontSize = 11.sp, fontWeight = FontWeight.Medium)
 )
 
+/** Always light, even when Android itself is using dark mode. */
 @Composable
-fun SadanTheme(
-    darkTheme: Boolean = isSystemInDarkTheme(),
-    content: @Composable () -> Unit
-) {
+fun SadanTheme(content: @Composable () -> Unit) {
     MaterialTheme(
-        colorScheme = if (darkTheme) DarkScheme else LightScheme,
+        colorScheme = SolarizedLightScheme,
         typography = AppTypography,
         content = content
     )

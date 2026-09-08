@@ -26,6 +26,7 @@ import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
+import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -43,6 +44,7 @@ import com.pansare.sadan.ui.components.LoadingState
 import com.pansare.sadan.ui.components.SectionHeader
 import com.pansare.sadan.ui.components.StandingPill
 import com.pansare.sadan.ui.components.UnresolvedNotice
+import com.pansare.sadan.ui.shareReceiptOnWhatsApp
 import com.pansare.sadan.util.CurrencyUtils
 import com.pansare.sadan.util.DateUtils
 
@@ -60,7 +62,6 @@ fun TenantProfileScreen(
     var summary by remember { mutableStateOf<DefaulterSummary?>(null) }
     var roomNumber by remember { mutableStateOf("") }
 
-    // Recompute whenever the payment list changes, so the profile never shows stale figures.
     LaunchedEffect(tenantId, payments) {
         summary = vm.repo.summaryFor(tenantId)
         vm.repo.findTenant(tenantId)?.let { t ->
@@ -84,6 +85,12 @@ fun TenantProfileScreen(
     Scaffold(
         topBar = {
             TopAppBar(
+                colors = TopAppBarDefaults.topAppBarColors(
+                    containerColor = MaterialTheme.colorScheme.primaryContainer,
+                    titleContentColor = MaterialTheme.colorScheme.onPrimaryContainer,
+                    navigationIconContentColor = MaterialTheme.colorScheme.onPrimaryContainer,
+                    actionIconContentColor = MaterialTheme.colorScheme.onPrimaryContainer
+                ),
                 title = { Text("Tenant") },
                 navigationIcon = {
                     IconButton(onClick = onBack) {
@@ -127,8 +134,10 @@ fun TenantProfileScreen(
                     DetailRow("Mobile", t.mobileNumber.ifBlank { "Not recorded" })
                     DetailRow("Monthly rent", CurrencyUtils.format(t.monthlyRent))
                     DetailRow("Occupancy start", DateUtils.formatMonth(t.occupancyStartMonth))
-                    DetailRow("Status", t.status.name.replace('_', ' ').lowercase()
-                        .replaceFirstChar { it.uppercase() })
+                    DetailRow(
+                        "Status",
+                        t.status.name.replace('_', ' ').lowercase().replaceFirstChar { it.uppercase() }
+                    )
                     if (t.remarks.isNotBlank()) DetailRow("Remarks", t.remarks)
                 }
             }
@@ -162,10 +171,7 @@ fun TenantProfileScreen(
                     DetailRow("Outstanding since", s.outstandingSince?.let { DateUtils.formatMonth(it) } ?: "—")
                     DetailRow("Last month fully paid", s.lastPaidUpTo?.let { DateUtils.formatMonth(it) } ?: "—")
                     if (s.unresolvedOutstanding > 0) {
-                        DetailRow(
-                            "Of which unresolved",
-                            CurrencyUtils.format(s.unresolvedOutstanding)
-                        )
+                        DetailRow("Of which unresolved", CurrencyUtils.format(s.unresolvedOutstanding))
                     }
                 }
             }
@@ -174,7 +180,6 @@ fun TenantProfileScreen(
                 SectionHeader("Unpaid periods")
                 Card(Modifier.fillMaxWidth()) {
                     Column(Modifier.padding(14.dp)) {
-                        // Gaps are listed as separate runs, never merged into one long span.
                         s.unpaidPeriods.forEach { p ->
                             Text(
                                 if (p.fromMonth == p.toMonth) {
@@ -194,43 +199,50 @@ fun TenantProfileScreen(
             SectionHeader("Actions")
             Button(
                 onClick = onRecordPayment,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .heightIn(min = 50.dp)
+                modifier = Modifier.fillMaxWidth().heightIn(min = 50.dp)
             ) { Text("Record payment") }
 
             OutlinedButton(
                 onClick = onViewLedger,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .heightIn(min = 50.dp)
+                modifier = Modifier.fillMaxWidth().heightIn(min = 50.dp)
             ) { Text("View ledger (${s.unpaidMonths + s.partialMonths} months owing)") }
 
             OutlinedButton(
                 onClick = onEdit,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .heightIn(min = 50.dp)
+                modifier = Modifier.fillMaxWidth().heightIn(min = 50.dp)
             ) { Text("Edit tenant") }
 
             if (payments.isNotEmpty()) {
                 SectionHeader("Recent payments")
                 payments.take(5).forEach { p ->
                     Card(Modifier.fillMaxWidth()) {
-                        Row(Modifier.padding(14.dp)) {
-                            Column(Modifier.weight(1f)) {
-                                Text(
-                                    CurrencyUtils.format(p.payment.amountPaid),
-                                    fontWeight = FontWeight.SemiBold
-                                )
-                                Text(
-                                    "${DateUtils.formatDate(p.payment.paymentDate)} · ${p.payment.paymentMode.label}",
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                                )
+                        Column(Modifier.padding(14.dp)) {
+                            Row {
+                                Column(Modifier.weight(1f)) {
+                                    Text(
+                                        CurrencyUtils.format(p.payment.amountPaid),
+                                        fontWeight = FontWeight.SemiBold
+                                    )
+                                    Text(
+                                        "${DateUtils.formatDate(p.payment.paymentDate)} · ${p.payment.paymentMode.label}",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                }
                             }
-                            OutlinedButton(onClick = { vm.shareReceipt(p.payment.id) }) {
-                                Text("Receipt")
+                            Spacer(Modifier.height(8.dp))
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                OutlinedButton(
+                                    onClick = { vm.shareReceipt(p.payment.id) },
+                                    modifier = Modifier.weight(1f)
+                                ) { Text("Receipt") }
+                                OutlinedButton(
+                                    onClick = { vm.shareReceiptOnWhatsApp(p.payment.id) },
+                                    modifier = Modifier.weight(1f)
+                                ) { Text("WhatsApp") }
                             }
                         }
                     }

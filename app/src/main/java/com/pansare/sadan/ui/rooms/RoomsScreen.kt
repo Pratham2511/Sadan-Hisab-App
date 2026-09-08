@@ -8,6 +8,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -63,7 +64,10 @@ fun RoomsScreen(
     val bCount = rooms.count { it.wing == "B" }
     val wingRooms = rooms.filter { it.wing == wing }
 
+    // The app shell already applies the top/bottom system insets. Zero them here so this
+    // nested Scaffold does not add the large blank bands visible above/below the room list.
     Scaffold(
+        contentWindowInsets = WindowInsets(0, 0, 0, 0),
         floatingActionButton = {
             ExtendedFloatingActionButton(
                 onClick = { onAddTenant(0L) },
