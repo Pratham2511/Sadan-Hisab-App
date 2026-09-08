@@ -9,12 +9,14 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
+import androidx.compose.material3.NavigationBarItemDefaults
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarDuration
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
+import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -50,7 +52,6 @@ fun SadanApp(vm: AppViewModel) {
     val route = backStack?.destination?.route
     val snackbar = remember { SnackbarHostState() }
 
-    // Every success and every failure is surfaced. No silent outcomes.
     LaunchedEffect(Unit) {
         vm.events.collect { event ->
             val message = when (event) {
@@ -62,13 +63,21 @@ fun SadanApp(vm: AppViewModel) {
     }
 
     val isTopLevel = TopLevel.entries.any { it.route == route }
+    val chrome = TopAppBarDefaults.topAppBarColors(
+        containerColor = MaterialTheme.colorScheme.primaryContainer,
+        titleContentColor = MaterialTheme.colorScheme.onPrimaryContainer,
+        navigationIconContentColor = MaterialTheme.colorScheme.onPrimaryContainer,
+        actionIconContentColor = MaterialTheme.colorScheme.onPrimaryContainer
+    )
 
     Scaffold(
+        containerColor = MaterialTheme.colorScheme.background,
         topBar = {
             if (isTopLevel) {
                 val currentTopLevel = TopLevel.entries.firstOrNull { it.route == route }
                 if (currentTopLevel == TopLevel.DASHBOARD) {
                     TopAppBar(
+                        colors = chrome,
                         title = {
                             Column {
                                 Text("PANSARE SADAN", fontWeight = FontWeight.Bold)
@@ -81,6 +90,7 @@ fun SadanApp(vm: AppViewModel) {
                     )
                 } else if (currentTopLevel != null) {
                     TopAppBar(
+                        colors = chrome,
                         title = { Text(currentTopLevel.label) }
                     )
                 }
@@ -88,12 +98,22 @@ fun SadanApp(vm: AppViewModel) {
         },
         bottomBar = {
             if (isTopLevel) {
-                NavigationBar {
+                NavigationBar(
+                    containerColor = MaterialTheme.colorScheme.primaryContainer,
+                    contentColor = MaterialTheme.colorScheme.onPrimaryContainer
+                ) {
                     TopLevel.entries.forEach { item ->
                         val selected = route == item.route
                         NavigationBarItem(
                             selected = selected,
                             alwaysShowLabel = true,
+                            colors = NavigationBarItemDefaults.colors(
+                                selectedIconColor = MaterialTheme.colorScheme.primaryContainer,
+                                selectedTextColor = MaterialTheme.colorScheme.onPrimaryContainer,
+                                indicatorColor = MaterialTheme.colorScheme.primary,
+                                unselectedIconColor = MaterialTheme.colorScheme.onPrimaryContainer,
+                                unselectedTextColor = MaterialTheme.colorScheme.onPrimaryContainer
+                            ),
                             onClick = {
                                 navController.navigate(item.route) {
                                     popUpTo(TopLevel.DASHBOARD.route) { saveState = true }
@@ -123,7 +143,6 @@ fun SadanApp(vm: AppViewModel) {
     ) { pad ->
         Box(Modifier.padding(pad)) {
             NavHost(navController, startDestination = TopLevel.DASHBOARD.route) {
-
                 composable(TopLevel.DASHBOARD.route) {
                     DashboardScreen(
                         vm = vm,

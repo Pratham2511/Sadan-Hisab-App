@@ -1,13 +1,13 @@
 package com.pansare.sadan.util
 
 import android.util.Xml
-import com.pansare.sadan.domain.MonthKey
 import com.pansare.sadan.domain.RawPaymentRow
 import org.xmlpull.v1.XmlPullParser
+import java.io.ByteArrayInputStream
 import java.io.InputStream
 import java.text.SimpleDateFormat
-import java.util.Date
 import java.util.Locale
+import java.util.TimeZone
 import java.util.zip.ZipInputStream
 
 data class SheetInfo(val name: String, val rId: String)
@@ -19,7 +19,7 @@ data class RawSheetData(
 
 data class ParsedReceiptDetails(
     val receiptNumber: String = "",
-    val dateMillis: Long = System.currentTimeMillis(),
+    val dateMillis: Long? = null,
     val amount: Long = 0L,
     val fromMonth: String = "",
     val toMonth: String = "",
@@ -29,320 +29,368 @@ data class ParsedReceiptDetails(
 )
 
 object XlsxImporter {
-
     /**
-     * Lists all sheet names in an XLSX workbook.
+     * Legacy register forms include both `305/29/09/2016` and `270  5/10/2017`.
+     * Day/month are range-limited so an amount before the next receipt cannot become
+     * a false receipt. The year may be followed immediately by text in old sheets.
      */
+    private val receiptDateRegex = Regex(
+        """\b(\d{3,8})\s*(?:/|\s+)\s*(0{0,2}(?:[1-9]|[12]\d|3[01]))\s*[./-]\s*((?:0\s*)?(?:[1-9]|1[0-2]))\s*[./-]\s*(\d{2,4})(?!\d)"""
+    )
+
     fun listSheets(inputStream: InputStream): List<String> {
-        val sheets = mutableListOf<String>()
-        ZipInputStream(inputStream).use { zip ->
-            var entry = zip.nextEntry
-            while (entry != null) {
-                if (entry.name == "xl/workbook.xml") {
-                    sheets.addAll(parseWorkbookXml(zip))
-                    break
-                }
-                zip.closeEntry()
-                entry = zip.nextEntry
-            }
-        }
-        return sheets
+        val bytes = inputStream.use { it.readBytes() }
+        val workbook = readZipEntry(bytes, "xl/workbook.xml") ?: return emptyList()
+        return parseWorkbookXml(ByteArrayInputStream(workbook))
     }
 
-    /**
-     * Parses a specific sheet by name (or the first sheet if name is null) from an XLSX workbook stream.
-     */
     fun parseSheet(inputStream: InputStream, targetSheetName: String? = null): RawSheetData {
-        var sharedStrings = listOf<String>()
-        var targetEntryName = "xl/worksheets/sheet1.xml"
-        val sheetMap = mutableMapOf<String, String>() // sheetName -> sheetEntryName
-        val rIdToName = mutableMapOf<String, String>() // rId -> sheetName
-        val rIdToTarget = mutableMapOf<String, String>() // rId -> targetFilename
+        val bytes = inputStream.use { it.readBytes() }
+        val workbook = readZipEntry(bytes, "xl/workbook.xml")
+            ?: error("This Excel file has no workbook.xml entry.")
+        val rels = readZipEntry(bytes, "xl/_rels/workbook.xml.rels")
+            ?: error("This Excel file has no workbook relationship map.")
 
-        // First pass: locate sharedStrings, workbook.xml, and rels
-        ZipInputStream(inputStream).use { zip ->
-            var entry = zip.nextEntry
-            while (entry != null) {
-                when (entry.name) {
-                    "xl/sharedStrings.xml" -> {
-                        sharedStrings = parseSharedStrings(zip)
-                    }
-                    "xl/workbook.xml" -> {
-                        val sheets = parseWorkbookXmlWithInfo(zip)
-                        sheets.forEach { rIdToName[it.rId] = it.name }
-                    }
-                    "xl/_rels/workbook.xml.rels" -> {
-                        rIdToTarget.putAll(parseWorkbookRels(zip))
-                    }
-                }
-                zip.closeEntry()
-                entry = zip.nextEntry
-            }
-        }
+        val sheetInfos = parseWorkbookXmlWithInfo(ByteArrayInputStream(workbook))
+        require(sheetInfos.isNotEmpty()) { "The workbook has no worksheets." }
+        val relationships = parseWorkbookRels(ByteArrayInputStream(rels))
 
-        // Match sheet name to zip entry path
-        rIdToName.forEach { (rId, name) ->
-            val target = rIdToTarget[rId] ?: ""
-            val entryPath = if (target.startsWith("worksheets/")) "xl/$target" else if (target.startsWith("/xl/")) target.substring(1) else "xl/worksheets/$target"
-            sheetMap[name] = entryPath
-        }
+        val chosen = targetSheetName?.let { requested ->
+            sheetInfos.firstOrNull { it.name == requested }
+        } ?: sheetInfos.first()
 
-        val chosenSheetName = targetSheetName?.takeIf { sheetMap.containsKey(it) }
-            ?: sheetMap.keys.firstOrNull()
-            ?: "Sheet1"
+        val target = relationships[chosen.rId]
+            ?: error("Could not locate worksheet '${chosen.name}'.")
+        val entryName = normalizeWorksheetTarget(target)
+        val sheetBytes = readZipEntry(bytes, entryName)
+            ?: error("Could not read worksheet '${chosen.name}'.")
 
-        targetEntryName = sheetMap[chosenSheetName] ?: "xl/worksheets/sheet1.xml"
+        val sharedStrings = readZipEntry(bytes, "xl/sharedStrings.xml")?.let {
+            parseSharedStrings(ByteArrayInputStream(it))
+        }.orEmpty()
 
-        // Second pass: read target sheet rows
-        var parsedRows = listOf<List<String>>()
-        // Re-read stream from caller if needed or stream sequentially
-        return RawSheetData(chosenSheetName, parsedRows)
+        return RawSheetData(
+            sheetName = chosen.name,
+            rows = parseWorksheetXml(ByteArrayInputStream(sheetBytes), sharedStrings)
+        )
     }
 
-    /**
-     * Parses raw matrix rows from a sheet into RawPaymentRow list.
-     */
     fun parseRowsFromMatrix(matrix: List<List<String>>): List<RawPaymentRow> {
         if (matrix.isEmpty()) return emptyList()
 
-        // Find header row index
-        var headerIndex = -1
-        var colRoom = -1
-        var colTenant = -1
-        var colRent = -1
-        var colReceipt = -1
-        var colUnpaidPeriod = -1
-        var colUnpaidMonths = -1
-        var colTotalAmount = -1
+        val headerIndex = matrix.indexOfFirst { row ->
+            val headers = row.map(::normalizeHeader)
+            headers.any { it == "room" || it == "roman" || it.startsWith("room") } &&
+                headers.any { it.contains("tenant") || it == "name" || it.endsWith("name") }
+        }.takeIf { it >= 0 } ?: 0
 
-        for (i in matrix.indices) {
-            val row = matrix[i]
-            for (j in row.indices) {
-                val cell = row[j].trim().lowercase()
-                if (cell.contains("roman") || cell.contains("room")) colRoom = j
-                if (cell.contains("tenant") || cell.contains("name")) colTenant = j
-                if (cell.contains("rent") && !cell.contains("unpaid")) colRent = j
-                if (cell.contains("receipt") || cell.contains("details")) colReceipt = j
-                if (cell.contains("unpaid rent") || cell.contains("unpaid period")) colUnpaidPeriod = j
-                if (cell.contains("unpaid months")) colUnpaidMonths = j
-                if (cell.contains("total")) colTotalAmount = j
-            }
-            if (colTenant != -1 || colReceipt != -1 || colRoom != -1) {
-                headerIndex = i
-                break
-            }
-        }
+        val headers = matrix.getOrNull(headerIndex).orEmpty().map(::normalizeHeader)
+        fun findColumn(predicate: (String) -> Boolean): Int = headers.indexOfFirst(predicate)
 
-        if (headerIndex == -1) headerIndex = 0
+        val colRoom = findColumn { it == "room" || it == "roman" || it.startsWith("room") }
+        val colTenant = findColumn { it.contains("tenant") || it == "name" || it.endsWith("name") }
+        val colRent = findColumn { it == "rent" || (it.contains("rent") && !it.contains("unpaid")) }
+        val colReceipt = findColumn { it.contains("receipt") || it.contains("paymentdetails") || it == "details" }
+        val colUnpaidPeriod = findColumn { it.contains("unpaidrent") || it.contains("unpaidperiod") }
 
         val results = mutableListOf<RawPaymentRow>()
-        val defaultMonth = MonthKey.current()
 
         for (i in (headerIndex + 1) until matrix.size) {
             val row = matrix[i]
-            if (row.all { it.isBlank() }) continue
+            fun cell(index: Int): String = if (index >= 0) row.getOrNull(index).orEmpty().trim() else ""
 
-            val rawRoom = if (colRoom >= 0 && colRoom < row.size) row[colRoom] else ""
-            val rawTenant = if (colTenant >= 0 && colTenant < row.size) row[colTenant] else ""
-            val rawRent = if (colRent >= 0 && colRent < row.size) row[colRent] else ""
-            val rawReceipt = if (colReceipt >= 0 && colReceipt < row.size) row[colReceipt] else ""
-            val rawUnpaidPeriod = if (colUnpaidPeriod >= 0 && colUnpaidPeriod < row.size) row[colUnpaidPeriod] else ""
+            val rawRoom = cell(colRoom)
+            val rawTenant = cell(colTenant)
+            val rawRent = cell(colRent)
+            val rawReceipt = cell(colReceipt)
+            val rawUnpaidPeriod = cell(colUnpaidPeriod)
 
-            if (rawTenant.isBlank() && rawRoom.isBlank() && rawReceipt.isBlank()) continue
+            if (rawRoom.isBlank() && rawTenant.isBlank() && rawReceipt.isBlank()) continue
 
-            val normRoom = normalizeRoomNumber(rawRoom)
-            val normRent = normalizeRentValue(rawRent)
-            val receiptDetails = parseReceiptDetails(rawReceipt)
-            val unpaidPeriod = parseUnpaidPeriod(rawUnpaidPeriod)
+            val room = normalizeRoomNumber(rawRoom)
+            val rent = normalizeRentValue(rawRent).takeIf { it > 0L }
+            val entries = parseReceiptEntries(rawReceipt)
 
-            val fromMonth = receiptDetails.fromMonth.ifBlank { unpaidPeriod.first.ifBlank { defaultMonth } }
-            val toMonth = receiptDetails.toMonth.ifBlank { unpaidPeriod.second.ifBlank { fromMonth } }
-
-            results += RawPaymentRow(
-                rowNumber = i + 1,
-                roomDisplay = normRoom,
-                tenantName = rawTenant.trim(),
-                amount = receiptDetails.amount.takeIf { it > 0 } ?: normRent,
-                paymentDateMillis = receiptDetails.dateMillis,
-                receiptNumber = receiptDetails.receiptNumber,
-                paymentMode = receiptDetails.paymentMode,
-                paidFromMonth = fromMonth,
-                paidToMonth = toMonth
-            )
+            if (entries.isNotEmpty()) {
+                entries.forEach { details ->
+                    results += RawPaymentRow(
+                        rowNumber = i + 1,
+                        roomDisplay = room,
+                        tenantName = rawTenant.trim(),
+                        paymentDateMillis = details.dateMillis,
+                        amount = details.amount.takeIf { it > 0L },
+                        receiptNumber = details.receiptNumber,
+                        paymentMode = details.paymentMode,
+                        paidFromMonth = details.fromMonth.takeIf { it.isNotBlank() },
+                        paidToMonth = details.toMonth.takeIf { it.isNotBlank() },
+                        sourceMonthlyRent = rent
+                    )
+                }
+            } else {
+                val period = parseUnpaidPeriod(rawUnpaidPeriod)
+                results += RawPaymentRow(
+                    rowNumber = i + 1,
+                    roomDisplay = room,
+                    tenantName = rawTenant.trim(),
+                    paymentDateMillis = null,
+                    amount = null,
+                    receiptNumber = "",
+                    paymentMode = "OTHER",
+                    paidFromMonth = period.first.takeIf { it.isNotBlank() },
+                    paidToMonth = period.second.takeIf { it.isNotBlank() },
+                    sourceMonthlyRent = rent
+                )
+            }
         }
 
         return results
     }
 
-    /**
-     * Normalizes messy room numbers e.g. "B1" -> "B-01", "B-01" -> "B-01", "B20" -> "B-20", "A27A" -> "A-27(A)"
-     */
     fun normalizeRoomNumber(raw: String): String {
-        val s = raw.trim().uppercase().replace(" ", "")
+        val s = raw.trim().uppercase(Locale.ROOT).replace("\u00A0", "").replace(" ", "")
         if (s.isBlank()) return ""
 
-        // Handle "A-27(A)", "A-27(B)", "A27A", "A27B"
         if (s.contains("27")) {
             if (s.contains("(A)") || s.endsWith("A")) return "A-27(A)"
             if (s.contains("(B)") || s.endsWith("B")) return "A-27(B)"
         }
 
-        val wing = s.firstOrNull { it == 'A' || it == 'B' }?.toString() ?: "B"
-        val digits = s.filter { it.isDigit() }.toIntOrNull() ?: return s
-        return "%s-%02d".format(wing, digits)
+        val wing = s.firstOrNull { it == 'A' || it == 'B' }?.toString() ?: return s
+        val digits = s.filter(Char::isDigit).toIntOrNull() ?: return s
+        return "%s-%02d".format(Locale.US, wing, digits)
     }
 
-    /**
-     * Normalizes rent cell e.g. "400", "400 Renter", "Rs 400" -> 400
-     */
     fun normalizeRentValue(raw: String): Long {
         if (raw.isBlank()) return 0L
         val clean = raw.replace(",", "").trim()
-        val match = Regex("""\d+""").find(clean)
-        return match?.value?.toLongOrNull() ?: 0L
+        return Regex("""\d+""").find(clean)?.value?.toLongOrNull() ?: 0L
     }
 
-    /**
-     * Parses free-form receipt strings e.g. "302/29/09 400 jan 26 to july 26"
-     */
+    fun parseReceiptEntries(text: String): List<ParsedReceiptDetails> {
+        if (text.isBlank()) return emptyList()
+        val matches = receiptDateRegex.findAll(text).toList()
+        if (matches.isEmpty()) return listOf(parseReceiptDetails(text))
+
+        return matches.mapIndexed { index, match ->
+            val end = matches.getOrNull(index + 1)?.range?.first ?: text.length
+            val segment = text.substring(match.range.first, end).trim()
+            parseReceiptDetails(segment)
+        }
+    }
+
     fun parseReceiptDetails(text: String): ParsedReceiptDetails {
         if (text.isBlank()) return ParsedReceiptDetails()
 
         val clean = text.trim()
-        var receiptNo = ""
-        var dateMillis = System.currentTimeMillis()
-        var amount = 0L
-        var mode = "CASH"
-        var fromMonth = ""
-        var toMonth = ""
-        var isAmbiguous = false
-
-        // Detect payment mode keywords
-        val upper = clean.uppercase()
-        if (upper.contains("UPI")) mode = "UPI"
-        else if (upper.contains("CHEQUE") || upper.contains("CHQ")) mode = "CHEQUE"
-        else if (upper.contains("BANK") || upper.contains("TRANSFER") || upper.contains("NEFT") || upper.contains("RTGS")) mode = "BANK_TRANSFER"
-        else if (upper.contains("CASH")) mode = "CASH"
-
-        // Extract receipt number & date e.g. "302/29/09" or "300210/15/10/25"
-        val receiptSlashDateRegex = Regex("""(\d{3,10})/(\d{1,2})/(\d{1,2})(?:/(\d{2,4}))?""")
-        val match = receiptSlashDateRegex.find(clean)
-
-        if (match != null) {
-            receiptNo = match.groupValues[1]
-            val day = match.groupValues[2].toIntOrNull() ?: 1
-            val month = match.groupValues[3].toIntOrNull() ?: 1
-            val yearRaw = match.groupValues[4]
-            val year = if (yearRaw.isBlank()) 2026 else if (yearRaw.length == 2) 2000 + yearRaw.toInt() else yearRaw.toInt()
-
-            val dateStr = "%04d-%02d-%02d".format(year, month, day)
-            val parsedDate = runCatching { SimpleDateFormat("yyyy-MM-dd", Locale.US).parse(dateStr) }.getOrNull()
-            if (parsedDate != null) dateMillis = parsedDate.time
-        } else {
-            // Try standalone receipt number
-            val numMatch = Regex("""\b\d{3,8}\b""").find(clean)
-            if (numMatch != null) receiptNo = numMatch.value
+        val dateMatch = receiptDateRegex.find(clean)
+        val receiptNo = dateMatch?.groupValues?.get(1).orEmpty()
+        val dateMillis = dateMatch?.let(::parseReceiptDate)
+        val upper = clean.uppercase(Locale.ROOT)
+        val mode = when {
+            upper.contains("UPI") || upper.contains("GPAY") || upper.contains("G PAY") || upper.contains("PHONEPE") -> "UPI"
+            upper.contains("CHEQUE") || upper.contains("CHEQ") || upper.contains("CHQ") -> "CHEQUE"
+            upper.contains("BANK") || upper.contains("TRANSFER") || upper.contains("NEFT") || upper.contains("RTGS") -> "BANK_TRANSFER"
+            upper.contains("CASH") -> "CASH"
+            else -> "OTHER"
         }
 
-        // Extract amount if present in receipt string e.g. "₹400", "400", "Rs 500"
-        val amountRegex = Regex("""(?:RS\.?|₹|\b)\s*(\d{3,6})\b""", RegexOption.IGNORE_CASE)
-        val amountMatch = amountRegex.findAll(clean).firstOrNull { m ->
-            val v = m.groupValues[1]
-            v != receiptNo && v.toIntOrNull()?.let { it in 100..100000 } == true
-        }
-        if (amountMatch != null) {
-            amount = amountMatch.groupValues[1].toLongOrNull() ?: 0L
-        }
-
-        // Extract month period e.g. "jan 26 to july 26" or "jan to mar 2026"
+        val amount = extractPaymentAmount(clean, dateMatch, receiptNo)
         val period = parseUnpaidPeriod(clean)
-        fromMonth = period.first
-        toMonth = period.second
 
         return ParsedReceiptDetails(
             receiptNumber = receiptNo,
             dateMillis = dateMillis,
             amount = amount,
-            fromMonth = fromMonth,
-            toMonth = toMonth,
+            fromMonth = period.first,
+            toMonth = period.second,
             paymentMode = mode,
-            isAmbiguous = isAmbiguous,
+            isAmbiguous = dateMillis == null || amount <= 0L || period.first.isBlank(),
             rawText = clean
         )
     }
 
-    /**
-     * Parses month ranges like "jan 26 to july 26" or "jan-mar 2026"
-     */
+    private fun extractPaymentAmount(text: String, dateMatch: MatchResult?, receiptNo: String): Long {
+        fun valid(value: Long?): Long? = value?.takeIf {
+            it > 0L && it.toString() != receiptNo && it !in 1900L..2100L
+        }
+
+        Regex("""=\s*(\d{2,8})(?!\d)""")
+            .find(text)
+            ?.groupValues?.get(1)?.toLongOrNull()
+            ?.let(::valid)
+            ?.let { return it }
+
+        Regex("""(?:₹|\bRS\.?\s*)\s*(\d{2,8})(?!\d)""", RegexOption.IGNORE_CASE)
+            .findAll(text)
+            .mapNotNull { valid(it.groupValues[1].toLongOrNull()) }
+            .firstOrNull()
+            ?.let { return it }
+
+        val start = dateMatch?.range?.last?.plus(1) ?: 0
+        return Regex("""(?<!\d)(\d{2,8})(?!\d)""")
+            .findAll(text.substring(start))
+            .mapNotNull { valid(it.groupValues[1].toLongOrNull()) }
+            .lastOrNull() ?: 0L
+    }
+
+    private fun parseReceiptDate(match: MatchResult): Long? {
+        val day = match.groupValues[2].filter(Char::isDigit).toIntOrNull() ?: return null
+        val month = match.groupValues[3].filter(Char::isDigit).toIntOrNull() ?: return null
+        val rawYear = match.groupValues[4].toIntOrNull() ?: return null
+        val year = if (rawYear < 100) 2000 + rawYear else rawYear
+        if (day !in 1..31 || month !in 1..12 || year !in 1900..2100) return null
+
+        val fmt = SimpleDateFormat("yyyy-MM-dd", Locale.US).apply {
+            isLenient = false
+            timeZone = TimeZone.getDefault()
+        }
+        return runCatching {
+            fmt.parse("%04d-%02d-%02d".format(Locale.US, year, month, day))?.time
+        }.getOrNull()
+    }
+
     fun parseUnpaidPeriod(text: String): Pair<String, String> {
         if (text.isBlank()) return "" to ""
 
         val monthNames = mapOf(
-            "jan" to 1, "feb" to 2, "mar" to 3, "apr" to 4, "may" to 5, "jun" to 6,
-            "jul" to 7, "july" to 7, "aug" to 8, "sep" to 9, "sept" to 9, "oct" to 10,
-            "nov" to 11, "dec" to 12
+            "jan" to 1, "january" to 1,
+            "feb" to 2, "february" to 2,
+            "mar" to 3, "march" to 3,
+            "apr" to 4, "april" to 4,
+            "may" to 5,
+            "jun" to 6, "june" to 6,
+            "jul" to 7, "july" to 7,
+            "aug" to 8, "august" to 8,
+            "sep" to 9, "sept" to 9, "supt" to 9, "september" to 9,
+            "oct" to 10, "october" to 10,
+            "nov" to 11, "november" to 11,
+            "dec" to 12, "des" to 12, "december" to 12
         )
 
-        val clean = text.lowercase().replace(".", "").replace(",", "")
+        val clean = text.lowercase(Locale.ROOT).replace(".", "").replace(",", "")
+        val regex = Regex(
+            """([a-z]{3,9})\s*(\d{2,4})?\s*(?:to|-)\s*([a-z]{3,9})\s*(\d{2,4})?"""
+        )
+        val match = regex.find(clean) ?: return "" to ""
+        val m1 = monthNames[match.groupValues[1]] ?: return "" to ""
+        val m2 = monthNames[match.groupValues[3]] ?: return "" to ""
 
-        // Match patterns like "jan 26 to july 26" or "jan 2026 to jul 2026"
-        val rangeRegex = Regex("""([a-z]{3,4})\s*(\d{2,4})?\s*(?:to|-)\s*([a-z]{3,4})\s*(\d{2,4})?""")
-        val match = rangeRegex.find(clean)
-
-        if (match != null) {
-            val m1Str = match.groupValues[1]
-            val y1Str = match.groupValues[2]
-            val m2Str = match.groupValues[3]
-            val y2Str = match.groupValues[4]
-
-            val m1 = monthNames[m1Str] ?: 1
-            val m2 = monthNames[m2Str] ?: m1
-
-            val currentYear = 2026
-            fun parseYear(y: String): Int {
-                if (y.isBlank()) return currentYear
-                val num = y.toIntOrNull() ?: return currentYear
-                return if (num < 100) 2000 + num else num
-            }
-
-            val y2 = parseYear(y2Str.ifBlank { y1Str })
-            val y1 = parseYear(y1Str.ifBlank { y2Str })
-
-            val from = "%04d-%02d".format(y1, m1)
-            val to = "%04d-%02d".format(y2, m2)
-            return from to to
+        fun year(raw: String, fallback: String): Int {
+            val value = raw.ifBlank { fallback }.toIntOrNull() ?: return java.time.Year.now().value
+            return if (value < 100) 2000 + value else value
         }
 
-        return "" to ""
+        val y2 = year(match.groupValues[4], match.groupValues[2])
+        val y1 = year(match.groupValues[2], match.groupValues[4])
+        return "%04d-%02d".format(Locale.US, y1, m1) to
+            "%04d-%02d".format(Locale.US, y2, m2)
     }
 
-    // ── XML Parsing Helpers ──────────────────────────────────────────
+    private fun normalizeHeader(value: String): String = value
+        .lowercase(Locale.ROOT)
+        .replace("'", "")
+        .replace(Regex("""[^a-z0-9]+"""), "")
+
+    private fun readZipEntry(bytes: ByteArray, requested: String): ByteArray? {
+        ZipInputStream(ByteArrayInputStream(bytes)).use { zip ->
+            var entry = zip.nextEntry
+            while (entry != null) {
+                if (entry.name == requested) return zip.readBytes()
+                zip.closeEntry()
+                entry = zip.nextEntry
+            }
+        }
+        return null
+    }
+
+    private fun normalizeWorksheetTarget(target: String): String {
+        val clean = target.removePrefix("/")
+        return when {
+            clean.startsWith("xl/") -> clean
+            clean.startsWith("worksheets/") -> "xl/$clean"
+            else -> "xl/$clean"
+        }
+    }
+
+    private fun parseWorksheetXml(stream: InputStream, sharedStrings: List<String>): List<List<String>> {
+        val parser = Xml.newPullParser()
+        parser.setInput(stream, "UTF-8")
+        val rows = mutableListOf<List<String>>()
+        var current = sortedMapOf<Int, String>()
+        var currentColumn = -1
+        var cellType = ""
+        var capture: String? = null
+        var text = StringBuilder()
+        var eventType = parser.eventType
+
+        fun decode(value: String): String = when (cellType) {
+            "s" -> value.toIntOrNull()?.let { sharedStrings.getOrNull(it) }.orEmpty()
+            "b" -> if (value == "1") "TRUE" else "FALSE"
+            else -> value
+        }
+
+        while (eventType != XmlPullParser.END_DOCUMENT) {
+            when (eventType) {
+                XmlPullParser.START_TAG -> when (parser.name) {
+                    "row" -> current = sortedMapOf()
+                    "c" -> {
+                        currentColumn = columnIndex(parser.getAttributeValue(null, "r").orEmpty())
+                        cellType = parser.getAttributeValue(null, "t").orEmpty()
+                    }
+                    "v", "t" -> if (currentColumn >= 0) {
+                        capture = parser.name
+                        text = StringBuilder()
+                    }
+                }
+                XmlPullParser.TEXT -> if (capture != null) text.append(parser.text)
+                XmlPullParser.END_TAG -> {
+                    if (capture != null && parser.name == capture) {
+                        current[currentColumn] = decode(text.toString())
+                        capture = null
+                    } else when (parser.name) {
+                        "c" -> {
+                            currentColumn = -1
+                            cellType = ""
+                        }
+                        "row" -> {
+                            val max = current.keys.maxOrNull() ?: -1
+                            rows += if (max < 0) emptyList() else List(max + 1) { current[it].orEmpty() }
+                        }
+                    }
+                }
+            }
+            eventType = parser.next()
+        }
+        return rows
+    }
+
+    private fun columnIndex(reference: String): Int {
+        val letters = reference.takeWhile(Char::isLetter).uppercase(Locale.ROOT)
+        if (letters.isBlank()) return -1
+        var value = 0
+        letters.forEach { value = value * 26 + (it - 'A' + 1) }
+        return value - 1
+    }
 
     private fun parseSharedStrings(stream: InputStream): List<String> {
         val parser = Xml.newPullParser()
         parser.setInput(stream, "UTF-8")
         val strings = mutableListOf<String>()
-        var eventType = parser.eventType
-        var currentText = StringBuilder()
+        var inSi = false
         var inText = false
+        var builder = StringBuilder()
+        var eventType = parser.eventType
 
         while (eventType != XmlPullParser.END_DOCUMENT) {
-            val name = parser.name
             when (eventType) {
-                XmlPullParser.START_TAG -> {
-                    if (name == "t") {
-                        inText = true
-                        currentText.clear()
-                    }
+                XmlPullParser.START_TAG -> when (parser.name) {
+                    "si" -> { inSi = true; builder = StringBuilder() }
+                    "t" -> if (inSi) inText = true
                 }
-                XmlPullParser.TEXT -> {
-                    if (inText) currentText.append(parser.text)
-                }
-                XmlPullParser.END_TAG -> {
-                    if (name == "t") {
-                        inText = false
-                        strings.add(currentText.toString())
-                    }
+                XmlPullParser.TEXT -> if (inSi && inText) builder.append(parser.text)
+                XmlPullParser.END_TAG -> when (parser.name) {
+                    "t" -> inText = false
+                    "si" -> { strings += builder.toString(); inSi = false }
                 }
             }
             eventType = parser.next()
@@ -350,9 +398,8 @@ object XlsxImporter {
         return strings
     }
 
-    private fun parseWorkbookXml(stream: InputStream): List<String> {
-        return parseWorkbookXmlWithInfo(stream).map { it.name }
-    }
+    private fun parseWorkbookXml(stream: InputStream): List<String> =
+        parseWorkbookXmlWithInfo(stream).map { it.name }
 
     private fun parseWorkbookXmlWithInfo(stream: InputStream): List<SheetInfo> {
         val parser = Xml.newPullParser()
@@ -362,10 +409,12 @@ object XlsxImporter {
 
         while (eventType != XmlPullParser.END_DOCUMENT) {
             if (eventType == XmlPullParser.START_TAG && parser.name == "sheet") {
-                val name = parser.getAttributeValue(null, "name") ?: ""
-                val rId = parser.getAttributeValue("http://schemas.openxmlformats.org/officeDocument/2006/relationships", "id")
-                    ?: parser.getAttributeValue(null, "r:id") ?: ""
-                if (name.isNotBlank()) sheets.add(SheetInfo(name, rId))
+                val name = parser.getAttributeValue(null, "name").orEmpty()
+                val rId = parser.getAttributeValue(
+                    "http://schemas.openxmlformats.org/officeDocument/2006/relationships",
+                    "id"
+                ) ?: parser.getAttributeValue(null, "r:id").orEmpty()
+                if (name.isNotBlank()) sheets += SheetInfo(name, rId)
             }
             eventType = parser.next()
         }
@@ -380,11 +429,9 @@ object XlsxImporter {
 
         while (eventType != XmlPullParser.END_DOCUMENT) {
             if (eventType == XmlPullParser.START_TAG && parser.name == "Relationship") {
-                val rId = parser.getAttributeValue(null, "Id") ?: ""
-                val target = parser.getAttributeValue(null, "Target") ?: ""
-                if (rId.isNotBlank() && target.isNotBlank()) {
-                    map[rId] = target
-                }
+                val id = parser.getAttributeValue(null, "Id").orEmpty()
+                val target = parser.getAttributeValue(null, "Target").orEmpty()
+                if (id.isNotBlank() && target.isNotBlank()) map[id] = target
             }
             eventType = parser.next()
         }
