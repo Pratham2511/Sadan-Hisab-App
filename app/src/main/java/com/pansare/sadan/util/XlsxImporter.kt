@@ -31,11 +31,11 @@ data class ParsedReceiptDetails(
 object XlsxImporter {
     /**
      * Legacy register forms include both `305/29/09/2016` and `270  5/10/2017`.
-     * The separator immediately after the receipt is intentionally constrained; an older
-     * `\D+` version could start a false receipt at an amount such as `1500, 370/08/02/2017`.
+     * Day/month are range-limited here so an amount immediately before the next receipt
+     * cannot accidentally be interpreted as another receipt number/date.
      */
     private val receiptDateRegex = Regex(
-        """\b(\d{3,8})\s*(?:/|\s+)\s*(\d{1,3})\s*[./-]\s*(\d(?:\s*\d)?)\s*[./-]\s*(\d{2,4})\b"""
+        """\b(\d{3,8})\s*(?:/|\s+)\s*(0{0,2}(?:[1-9]|[12]\d|3[01]))\s*[./-]\s*((?:0\s*)?(?:[1-9]|1[0-2]))\s*[./-]\s*(\d{2,4})\b"""
     )
 
     /** Lists every worksheet in an XLSX workbook. No row/column limits are assumed. */
@@ -111,7 +111,6 @@ object XlsxImporter {
             val rawReceipt = cell(colReceipt)
             val rawUnpaidPeriod = cell(colUnpaidPeriod)
 
-            // Formula/footer rows (such as SUM totals) have no room, tenant or receipt.
             if (rawRoom.isBlank() && rawTenant.isBlank() && rawReceipt.isBlank()) continue
 
             val room = normalizeRoomNumber(rawRoom)
@@ -134,7 +133,6 @@ object XlsxImporter {
                     )
                 }
             } else {
-                // Keep an unrecognised source row visible to validation instead of dropping it.
                 val period = parseUnpaidPeriod(rawUnpaidPeriod)
                 results += RawPaymentRow(
                     rowNumber = i + 1,
@@ -174,7 +172,6 @@ object XlsxImporter {
         return Regex("""\d+""").find(clean)?.value?.toLongOrNull() ?: 0L
     }
 
-    /** Parses all historical receipts embedded in a single spreadsheet cell. */
     fun parseReceiptEntries(text: String): List<ParsedReceiptDetails> {
         if (text.isBlank()) return emptyList()
         val matches = receiptDateRegex.findAll(text).toList()
@@ -187,7 +184,6 @@ object XlsxImporter {
         }
     }
 
-    /** Parses one receipt segment without mistaking a four-digit year for payment amount. */
     fun parseReceiptDetails(text: String): ParsedReceiptDetails {
         if (text.isBlank()) return ParsedReceiptDetails()
 
@@ -220,7 +216,6 @@ object XlsxImporter {
     }
 
     private fun extractPaymentAmount(text: String, dateMatch: MatchResult?, receiptNo: String): Long {
-        // Values explicitly following = / ₹ / Rs are the strongest signal in this register.
         val explicit = Regex("""(?:=|₹|\bRS\.?\s*)\s*(\d{2,8})\b""", RegexOption.IGNORE_CASE)
             .findAll(text)
             .mapNotNull { it.groupValues[1].toLongOrNull() }
