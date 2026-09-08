@@ -41,7 +41,9 @@ data class RawPaymentRow(
     val receiptNumber: String?,
     val paymentMode: String?,
     val paidFromMonth: String?,
-    val paidToMonth: String?
+    val paidToMonth: String?,
+    /** Current/source rent carried from a legacy rent register, when available. */
+    val sourceMonthlyRent: Long? = null
 )
 
 /** A row that passed validation and is safe to commit. */
@@ -54,7 +56,9 @@ data class ValidatedPaymentRow(
     val paymentMode: String,
     val paidFromMonth: String,
     val paidToMonth: String,
-    val fingerprint: String
+    val fingerprint: String,
+    val tenantName: String = "",
+    val sourceMonthlyRent: Long? = null
 )
 
 data class ImportResult(
@@ -110,9 +114,8 @@ object ImportEngine {
     ).joinToString("|")
 
     /**
-     * Validates every row. [existingFingerprints] are the payments already in the database,
-     * so re-importing the same file produces duplicates flagged for review rather than
-     * double-counted money.
+     * Validates every entry. [existingFingerprints] are payments already in the database,
+     * so re-importing the same file produces review items instead of duplicated money.
      */
     fun validate(
         rows: List<RawPaymentRow>,
@@ -142,7 +145,7 @@ object ImportEngine {
             if (room.uppercase() !in knownUpper) {
                 rejected += ImportIssue(
                     IssueKind.MALFORMED_VALUE,
-                    "Room \"$room\" is not part of the property's 48 rooms.",
+                    "Room \"$room\" is not part of the configured room inventory.",
                     row.rowNumber, ref
                 )
                 continue
@@ -152,7 +155,7 @@ object ImportEngine {
             if (amount == null) {
                 rejected += ImportIssue(
                     IssueKind.MISSING_REQUIRED_FIELD,
-                    "Payment amount is missing.", row.rowNumber, ref
+                    "Payment amount could not be read from this receipt entry.", row.rowNumber, ref
                 )
                 continue
             }
@@ -169,7 +172,7 @@ object ImportEngine {
             if (date == null) {
                 rejected += ImportIssue(
                     IssueKind.MISSING_REQUIRED_FIELD,
-                    "Payment date is missing.", row.rowNumber, ref
+                    "Payment date could not be read from this receipt entry.", row.rowNumber, ref
                 )
                 continue
             }
@@ -179,7 +182,7 @@ object ImportEngine {
             if (from.isNullOrBlank() || to.isNullOrBlank()) {
                 review += ImportIssue(
                     IssueKind.AMBIGUOUS_PERIOD,
-                    "The period this payment covers is not stated. Assign it manually before it affects the ledger.",
+                    "The period this payment covers is not clear. Review it before it affects the ledger.",
                     row.rowNumber, ref
                 )
                 continue
@@ -187,7 +190,7 @@ object ImportEngine {
             if (!MonthKey.isValid(from) || !MonthKey.isValid(to)) {
                 rejected += ImportIssue(
                     IssueKind.MALFORMED_VALUE,
-                    "Period \"$from\" to \"$to\" is not in yyyy-MM format.",
+                    "Period \"$from\" to \"$to\" could not be converted to a valid month range.",
                     row.rowNumber, ref
                 )
                 continue
@@ -234,7 +237,9 @@ object ImportEngine {
                 paymentMode = mode,
                 paidFromMonth = from,
                 paidToMonth = to,
-                fingerprint = print
+                fingerprint = print,
+                tenantName = row.tenantName?.trim().orEmpty(),
+                sourceMonthlyRent = row.sourceMonthlyRent
             )
         }
 
@@ -298,9 +303,7 @@ object ImportEngine {
         )
     }
 
-    /**
-     * Verifies that a stated month count matches the inclusive span of the stated dates.
-     */
+    /** Verifies that a stated month count matches the inclusive span of the stated dates. */
     fun checkMonthCount(reference: String, from: String, to: String, statedMonths: Int): ImportIssue? {
         if (!MonthKey.isValid(from) || !MonthKey.isValid(to) || from > to) return null
         val actual = MonthKey.monthsBetween(from, to)
