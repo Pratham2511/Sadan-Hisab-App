@@ -1,0 +1,40 @@
+name: Materialize Play Store icon
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "store-assets/pansare_sadan_icon.svg"
+      - ".github/workflows/materialize-icon.yml"
+
+permissions:
+  contents: write
+
+jobs:
+  render:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install SVG renderer
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y librsvg2-bin
+
+      - name: Render and validate Play Store icon
+        run: |
+          mkdir -p store-assets
+          rsvg-convert --width 512 --height 512 \
+            store-assets/pansare_sadan_icon.svg \
+            --output store-assets/pansare_sadan_play_store_icon_512.png
+          test "$(stat -c%s store-assets/pansare_sadan_play_store_icon_512.png)" -lt 1048576
+          file store-assets/pansare_sadan_play_store_icon_512.png | grep -q "512 x 512"
+
+      - name: Commit generated PNG and remove one-shot workflow
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git rm .github/workflows/materialize-icon.yml
+          git add store-assets/pansare_sadan_play_store_icon_512.png
+          git commit -m "chore: add Play Store icon asset"
+          git push

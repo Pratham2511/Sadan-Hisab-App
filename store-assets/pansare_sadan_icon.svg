@@ -1,0 +1,46 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512">
+  <defs>
+    <linearGradient id="tealA" x1="0" y1="0" x2="100%" y2="100%">
+      <stop offset="0" stop-color="#087b87"/>
+      <stop offset="0.55" stop-color="#005565"/>
+      <stop offset="1" stop-color="#003c4d"/>
+    </linearGradient>
+    <linearGradient id="tealB" x1="0" y1="0" x2="100%" y2="100%">
+      <stop offset="0" stop-color="#07919a"/>
+      <stop offset="0.55" stop-color="#006474"/>
+      <stop offset="1" stop-color="#004957"/>
+    </linearGradient>
+    <linearGradient id="fold" x1="0" y1="0" x2="100%" y2="100%">
+      <stop offset="0" stop-color="#87a56c"/>
+      <stop offset="1" stop-color="#4f735f"/>
+    </linearGradient>
+    <filter id="soft" x="-30%" y="-30%" width="160%" height="160%">
+      <feGaussianBlur stdDeviation="8"/>
+    </filter>
+  </defs>
+
+  <rect width="512" height="512" fill="#faf7e6"/>
+  <ellipse cx="256" cy="443" rx="188" ry="21" fill="#60796e" opacity="0.10" filter="url(#soft)"/>
+  <path d="M72 423 L220 505 L131 505 L72 450 Z" fill="#81958a" opacity="0.13"/>
+  <path d="M45 148 Q45 133 58 125 L245 19 Q256 12 267 19 L454 125 Q467 133 467 148 L467 175 L256 55 L45 175 Z" fill="url(#tealB)"/>
+  <path d="M45 175 L256 55 L467 175 L467 190 L256 72 L45 190 Z" fill="#fffdf2"/>
+  <path d="M82 169 L256 75 L430 169 L430 185 L82 185 Z" fill="#faf7e6"/>
+  <g fill="#5f806a">
+    <rect x="234" y="108" width="17" height="17" rx="1"/>
+    <rect x="261" y="108" width="17" height="17" rx="1"/>
+    <rect x="234" y="135" width="17" height="17" rx="1"/>
+    <rect x="261" y="135" width="17" height="17" rx="1"/>
+  </g>
+  <path d="M76 174 C76 164 84 158 94 158 H202 C250 158 276 188 276 227 C276 266 254 292 220 307 L206 313 V255 C226 248 235 236 235 218 C235 197 220 188 198 188 H118 V437 H76 Z" fill="url(#tealA)"/>
+  <path d="M119 207 H184 Q196 207 196 219 V431 H136 V245 L184 218 V207 Z" fill="#faf7e6"/>
+  <path d="M137 246 L183 220 V431 H137 Z" fill="#005464"/>
+  <circle cx="176" cy="340" r="6" fill="#fffdf2"/>
+  <path d="M286 170 C311 160 338 158 371 158 H432 V194 H360 C329 194 314 201 314 216 C314 229 327 236 352 246 C399 264 436 291 436 338 C436 394 393 438 332 438 H230 V354 L275 328 V396 H330 C367 396 389 377 389 349 C389 327 373 316 340 302 C296 283 268 261 268 222 C268 198 276 181 286 170 Z" fill="url(#tealB)"/>
+  <path d="M277 301 H362 Q378 301 378 317 V361 Q378 375 365 383 L350 393 H288 Q272 393 272 377 V317 Q272 301 277 301 Z" fill="#fbf8e9"/>
+  <g fill="#5e806b">
+    <rect x="289" y="320" width="70" height="8" rx="4"/>
+    <rect x="289" y="341" width="70" height="8" rx="4"/>
+    <rect x="289" y="362" width="54" height="8" rx="4"/>
+  </g>
+  <path d="M350 393 C356 375 365 365 378 357 V376 Q378 384 369 388 L350 393 Z" fill="url(#fold)"/>
+</svg>
